@@ -1,0 +1,30 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build Anno XML Tool EXE",
+            "type": "shell",
+            "command": "pyinstaller",
+            "args": [
+                "--onefile",
+                "--windowed",
+                "--icon",
+                "AnnoXMLTool.ico",
+                "--name",
+                "AnnoXMLTool",
+                "--add-data",
+                "kofi5.webp;.",
+                "--add-data",
+                "version.txt;.",
+                "--add-data",
+                "AnnoXMLTool.ico;.",
+                "AnnoXMLTool.py"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": []
+        }
+    ]
+}

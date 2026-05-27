@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller / Build
+build/
+dist/
+*.spec
+
+# Environments
+.venv/
+
+# Personal Config
+config.ini
+auto-exe-to-py.json
