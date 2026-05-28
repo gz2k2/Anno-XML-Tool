@@ -38,14 +38,14 @@ jobs:
           echo "VERSION=$($v.Trim())" >> $env:GITHUB_OUTPUT
           
           # Read changelog and handle multiline output for GitHub Actions
-          $changelog = Get-Content changelog.txt -Raw
+          $changelog = Get-Content changelog.md -Raw
           echo "CHANGELOG<<EOF" >> $env:GITHUB_OUTPUT
           echo $changelog >> $env:GITHUB_OUTPUT
           echo "EOF" >> $env:GITHUB_OUTPUT
 
       - name: Build EXE with PyInstaller
         run: |
-          pyinstaller --onefile --windowed --icon "AnnoXMLTool.ico" --name "AnnoXMLTool" --add-data "kofi5.webp;."  --add-data "version.txt;." --add-data "AnnoXMLTool.ico;." Anno_XML_Viewer.py
+          pyinstaller --onefile --windowed --icon "AnnoXMLTool.ico" --name "AnnoXMLTool" --add-data "kofi5.webp;."  --add-data "version.txt;." --add-data "AnnoXMLTool.ico;." Anno_XML_Tool.py
 
       - name: Create Release
         id: create_release

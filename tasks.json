@@ -9,7 +9,7 @@
                 "--onefile",
                 "--windowed",
                 "--icon",
-                "data/ui/AnnoXMLViewer.ico",
+                "data/ui/AnnoXMLTool.ico",
                 "--name",
                 "AnnoXMLViewer",
                 "--add-data",
@@ -17,8 +17,8 @@
                 "--add-data",
                 "version.txt;.",
                 "--add-data",
-                "data/ui/AnnoXMLViewer.ico;data/ui",
-                "Anno_XML_Viewer.py"
+                "data/ui/AnnoXMLTool.ico;data/ui",
+                "Anno_XML_Tool.py"
             ],
             "group": {
                 "kind": "build",

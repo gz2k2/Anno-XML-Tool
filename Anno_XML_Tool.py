@@ -492,7 +492,7 @@ class AnnoModTool(QMainWindow):
             pass
 
         self.setWindowTitle(f"{APP_NAME} v{app_version}")
-        self.setWindowIcon(QIcon(resource_path("data/ui/AnnoXMLViewer.ico")))
+        self.setWindowIcon(QIcon(resource_path("data/ui/AnnoXMLTool.ico")))
         self.resize(1280, 850)
 
         # Determine the path to config.ini in the program directory.

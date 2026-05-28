@@ -1,5 +1,5 @@
 ![Anno XML Viewer Screenshot](screenshot.jpg)
-
+---
 # Anno XML Viewer
 
 ## English Version (Deutsche Version unterhalb)
