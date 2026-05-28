@@ -13,7 +13,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSettings, QUrl
 from PyQt6.QtGui import QSyntaxHighlighter, QTextCharFormat, QColor, QFont, QAction, QPixmap, QIcon
 from PyQt6.QtGui import QDesktopServices
 
-APP_NAME = "Anno XML Tool"
+APP_NAME = "Anno XML Viewer"
 
 
 ################################################################################
@@ -492,7 +492,7 @@ class AnnoModTool(QMainWindow):
             pass
 
         self.setWindowTitle(f"{APP_NAME} v{app_version}")
-        self.setWindowIcon(QIcon(resource_path("AnnoXMLTool.ico")))
+        self.setWindowIcon(QIcon(resource_path("data/ui/AnnoXMLViewer.ico")))
         self.resize(1280, 850)
 
         # Determine the path to config.ini in the program directory.
@@ -576,7 +576,7 @@ class AnnoModTool(QMainWindow):
         )
         kofi_label.setFixedSize(btn_w, btn_h)
 
-        kofi_path = resource_path("kofi5.webp")
+        kofi_path = resource_path("data/ui/kofi5.webp")
         if os.path.exists(kofi_path):
             pix = QPixmap(kofi_path)
             if not pix.isNull():
@@ -775,7 +775,7 @@ class AnnoModTool(QMainWindow):
 
         set_layout.addWidget(QLabel("Base folder for XML files:"))
         set_layout.addLayout(path_layout)
-        self.btn_auto_load = QPushButton("Load project from saved path")
+        self.btn_auto_load = QPushButton("Save")
         self.btn_auto_load.clicked.connect(lambda: self.start_loading(self.line_xml_path.text()))
 
         set_layout.addWidget(self.btn_auto_load)

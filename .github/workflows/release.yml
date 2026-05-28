@@ -14,7 +14,8 @@ permissions:
 jobs:
   build-windows:
     runs-on: windows-latest
-
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'v_')
+    
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -44,7 +45,7 @@ jobs:
 
       - name: Build EXE with PyInstaller
         run: |
-          pyinstaller --onefile --windowed --icon "AnnoXMLTool.ico" --name "AnnoXMLTool" --add-data "kofi5.webp;."  --add-data "version.txt;." --add-data "AnnoXMLTool.ico;." AnnoXMLTool.py
+          pyinstaller --onefile --windowed --icon "AnnoXMLTool.ico" --name "AnnoXMLTool" --add-data "kofi5.webp;."  --add-data "version.txt;." --add-data "AnnoXMLTool.ico;." Anno_XML_Viewer.py
 
       - name: Create Release
         id: create_release

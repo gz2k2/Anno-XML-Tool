@@ -2,23 +2,23 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "Build Anno XML Tool EXE",
+            "label": "Build Anno XML Viewer EXE",
             "type": "shell",
             "command": "pyinstaller",
             "args": [
                 "--onefile",
                 "--windowed",
                 "--icon",
-                "AnnoXMLTool.ico",
+                "data/ui/AnnoXMLViewer.ico",
                 "--name",
-                "AnnoXMLTool",
+                "AnnoXMLViewer",
                 "--add-data",
-                "kofi5.webp;.",
+                "data/ui/kofi5.webp;data/ui",
                 "--add-data",
                 "version.txt;.",
                 "--add-data",
-                "AnnoXMLTool.ico;.",
-                "AnnoXMLTool.py"
+                "data/ui/AnnoXMLViewer.ico;data/ui",
+                "Anno_XML_Viewer.py"
             ],
             "group": {
                 "kind": "build",
