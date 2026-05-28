@@ -13,9 +13,9 @@
 * **Data Export:** Easily export complete XML data—including all active effects and buffs (if applicable)—for external use or modding.
 
 ### Project Description
-> **Anno XML Tool** is a lightweight, intuitive tool designed to streamline data exploration for *Anno* modders. Instead of digging through massive, disorganized XML files, this tool allows you to search for assets instantly using their **Name** or **GUID**. 
-> 
-> Once an asset is selected, the program dynamically maps out its entire ecosystem, displaying all connected **references**, **buffs**, and **effects** at a glance. With built-in **template filters**, you can isolate specific categories of assets effortlessly. Need to use the data elsewhere? The application features a comprehensive **export function** that packs the full XML data, along with its effects and buffs, into a clean file ready for your next modding project.
+**Anno XML Tool** is a lightweight, intuitive tool designed to streamline data exploration for *Anno* modders. Instead of digging through massive, disorganized XML files, this tool allows you to search for assets instantly using their **Name** or **GUID**. 
+ 
+Once an asset is selected, the program dynamically maps out its entire ecosystem, displaying all connected **references**, **buffs**, and **effects** at a glance. With built-in **template filters**, you can isolate specific categories of assets effortlessly. Need to use the data elsewhere? The application features a comprehensive **export function** that packs the full XML data, along with its effects and buffs, into a clean file ready for your next modding project.
 
 ### Feature Overview
 | Feature | Description |
@@ -47,9 +47,9 @@ If this tool helps you, I would appreciate a coffee!
 * **Datenexport:** Exportieren Sie mühelos die vollständigen XML-Daten – einschließlich aller aktiven Effekte und Buffs (falls vorhanden) – für die externe Weiterverwendung oder das Modding.
 
 ### Projektbeschreibung
-> **Anno XML Viewer** ist ein leichtgewichtiges, intuitives Tool, das die Datenanalyse für *Anno*-Modder rationalisiert. Anstatt sich durch riesige, unübersichtliche XML-Dateien zu wühlen, ermöglicht dieses Programm das sofortige Aufspüren von Assets anhand ihres **Namens** oder ihrer **GUID**. 
-> 
-> Sobald ein Asset ausgewählt ist, bildet das Programm dynamisch dessen gesamtes Ökosystem ab und zeigt alle verbundenen **Referenzen**, **Buffs** und **Effekte** auf einen Blick. Mit den integrierten **Template-Filtern** lassen sich gezielt bestimmte Asset-Kategorien isolieren. Sie benötigen die Daten für andere Zwecke? Die Anwendung verfügt über eine umfassende **Exportfunktion**, die die kompletten XML-Daten inklusive aller Effekte und Buffs in eine saubere Datei für Ihr nächstes Modding-Projekt packt.
+**Anno XML Viewer** ist ein leichtgewichtiges, intuitives Tool, das die Datenanalyse für *Anno*-Modder rationalisiert. Anstatt sich durch riesige, unübersichtliche XML-Dateien zu wühlen, ermöglicht dieses Programm das sofortige Aufspüren von Assets anhand ihres **Namens** oder ihrer **GUID**. 
+
+Sobald ein Asset ausgewählt ist, bildet das Programm dynamisch dessen gesamtes Ökosystem ab und zeigt alle verbundenen **Referenzen**, **Buffs** und **Effekte** auf einen Blick. Mit den integrierten **Template-Filtern** lassen sich gezielt bestimmte Asset-Kategorien isolieren. Sie benötigen die Daten für andere Zwecke? Die Anwendung verfügt über eine umfassende **Exportfunktion**, die die kompletten XML-Daten inklusive aller Effekte und Buffs in eine saubere Datei für Ihr nächstes Modding-Projekt packt.
 
 ### Funktionsübersicht
 | Funktion | Beschreibung |

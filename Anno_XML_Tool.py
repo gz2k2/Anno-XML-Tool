@@ -626,7 +626,8 @@ class AnnoModTool(QMainWindow):
         self.table.setHorizontalHeaderItem(1, QTableWidgetItem("Display Name"))
         self.table.setHorizontalHeaderItem(2, QTableWidgetItem("Template"))
         self.table.horizontalHeader().sortIndicatorChanged.connect(self.update_header_styling)
-        self.update_header_styling(self.table.horizontalHeader().sortIndicatorSection(), Qt.SortOrder.AscendingOrder)
+        self.table.horizontalHeader().setSortIndicator(1, Qt.SortOrder.AscendingOrder)
+        self.update_header_styling(1, Qt.SortOrder.AscendingOrder)
 
        # Column split 1:3:2 (GUID : Name : Template)
         header = self.table.horizontalHeader()
@@ -660,7 +661,8 @@ class AnnoModTool(QMainWindow):
         self.reverse_search_table.setColumnWidth(2, 150)
 
         self.reverse_search_table.horizontalHeader().sortIndicatorChanged.connect(self.update_header_styling)
-        self.update_header_styling(self.reverse_search_table.horizontalHeader().sortIndicatorSection(), Qt.SortOrder.AscendingOrder, target_table=self.reverse_search_table)
+        self.reverse_search_table.horizontalHeader().setSortIndicator(1, Qt.SortOrder.AscendingOrder)
+        self.update_header_styling(1, Qt.SortOrder.AscendingOrder, target_table=self.reverse_search_table)
 
         self.reverse_search_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.reverse_search_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
