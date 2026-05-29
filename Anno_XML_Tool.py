@@ -14,7 +14,7 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSettings, QUrl
 from PyQt6.QtGui import QSyntaxHighlighter, QTextCharFormat, QColor, QFont, QAction, QPixmap, QIcon
 from PyQt6.QtGui import QDesktopServices
 
-APP_NAME = "Anno XML Viewer"
+APP_NAME = "Anno XML Viewer by gz2k2"
 
 
 ################################################################################
@@ -1064,22 +1064,39 @@ class AnnoModTool(QMainWindow):
 
         current_lang = self.combo_lang.currentText()
         if not current_lang: return
-        lang_dict = self.languages_db.get(self.combo_lang.currentText(), {})
+        lang_dict = self.languages_db.get(current_lang, {})
         
         for guid, info in self.assets_db.items():
             if template_filter is not None and info["template_name"] not in template_filter:
                 continue
 
             display_name = lang_dict.get(info['oasis_id']) or info['fallback_name']
+            
+            # Initialize searchable_content with core elements that are always searched
+            searchable_content = [
+                guid.lower(),
+                info['template_name'].lower(),
+                display_name.lower() # This is the primary display name (translated or fallback)
+            ]
 
+            # Always include the raw content of the <Name> tag for search,
+            # as it's a direct identifier for the asset.
+            # Avoid adding "n/a" if fallback_name is not set.
             name = display_name.lower()
             template = info['template_name'].lower()
             
-            searchable_content = [guid.lower(), name, template]
+            if info['fallback_name'] != "N/A":
+                fallback_name_lower = info['fallback_name'].lower()
+                if fallback_name_lower not in searchable_content: # Prevent duplicates if display_name was already fallback_name
+                    searchable_content.append(fallback_name_lower)
 
+            # If the "Search only GUID Text" checkbox is unchecked,
+            # add all other text references (like InfoDescription).
             if not self.cb_search_main_only.isChecked():
                 for tid in info.get('text_ids', []):
-                    searchable_content.append(lang_dict.get(tid, "").lower())
+                    text_from_tid = lang_dict.get(tid, "").lower()
+                    if text_from_tid and text_from_tid not in searchable_content:
+                        searchable_content.append(text_from_tid)
 
             asset_match = True
 
