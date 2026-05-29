@@ -8,7 +8,8 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QPushButton, QFileDialog, QLabel, QHeaderView, QTextEdit, 
                              QSplitter, QMessageBox, QTreeWidget, QTreeWidgetItem, 
                              QMenu, QDialog, QListWidget, QListWidgetItem, 
-                             QDialogButtonBox, QComboBox, QTabWidget, QGroupBox)
+                             QDialogButtonBox, QComboBox, QTabWidget, QGroupBox,
+                             QCheckBox)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSettings, QUrl
 from PyQt6.QtGui import QSyntaxHighlighter, QTextCharFormat, QColor, QFont, QAction, QPixmap, QIcon
 from PyQt6.QtGui import QDesktopServices
@@ -133,6 +134,7 @@ class AnnoLoader(QThread):
         asset_paths = glob.glob(os.path.join(self.folder, "**/assets.xml"), recursive=True)
         template_paths = glob.glob(os.path.join(self.folder, "**/templates.xml"), recursive=True)
         text_files = glob.glob(os.path.join(self.folder, "**/texts_*.xml"), recursive=True)
+        text_files = [tf for tf in text_files if os.path.basename(tf) != "texts_metadata.xml"]
 
         a_path = asset_paths[0] if asset_paths else ""
         t_path = template_paths[0] if template_paths else ""
@@ -196,6 +198,7 @@ class AnnoLoader(QThread):
                                 "xml": ET.tostring(elem, encoding='unicode'),
                                 "template_name": template_name,
                                 "oasis_id": vals.findtext(".//Text/OasisId"),
+                                "info_description_id": vals.findtext(".//Standard/InfoDescription"),
                                 "fallback_name": vals.findtext(".//Standard/Name") or "N/A",
                                 "text_ids": list(text_ids)
                             }
@@ -527,6 +530,8 @@ class AnnoModTool(QMainWindow):
         self.current_xml_root = None
         self.block_signals = False
 
+        self.statusBar().showMessage("Ready")
+
         container = QWidget()
         self.setCentralWidget(container)
 
@@ -537,7 +542,7 @@ class AnnoModTool(QMainWindow):
         nav = QHBoxLayout()
 
         self.combo_lang = QComboBox()
-        self.lbl_status = QLabel("Ready")
+        self.combo_lang.setFixedWidth(140)
         self.search = QLineEdit()
         self.search.setPlaceholderText("enter one or more terms, use '-' prefix for exclusion (e.g. 'tech civic -gate')")
 
@@ -545,6 +550,9 @@ class AnnoModTool(QMainWindow):
         self.btn_template_filter = QPushButton("Template Filter...")
         self.lbl_filter = QLabel("Search-Filter")
         self.lbl_filter.setStyleSheet("color: #81c784; font-weight: bold; padding-left: 8px;")
+        self.cb_search_main_only = QCheckBox("Search only GUID Text")
+        self.cb_search_main_only.setStyleSheet("font-size: 10px; color: #888; padding-left: 8px;")
+        self.cb_search_main_only.setChecked(True)
         self.btn_template_filter.setCursor(Qt.CursorShape.PointingHandCursor)
 
         self._buff_filter_tags = ["Buffs", "BoostBuffs", "Effects", "FunctionalEffects", "TechResearchableTrigger", "UnlockReward"]
@@ -595,10 +603,15 @@ class AnnoModTool(QMainWindow):
         export_columns_layout.addLayout(export_mod_layout)
 
         nav.addWidget(self.combo_lang)
-        nav.addWidget(self.lbl_status)
 
         nav.addWidget(self.search)
-        nav.addWidget(self.lbl_filter)
+
+        filter_vbox = QVBoxLayout()
+        filter_vbox.setSpacing(0)
+        filter_vbox.addWidget(self.lbl_filter)
+        filter_vbox.addWidget(self.cb_search_main_only)
+        nav.addLayout(filter_vbox)
+
         nav.addWidget(self.btn_template_filter)
         nav.addWidget(self.lbl_buff_filter)
         nav.addWidget(self.btn_buff_filter)
@@ -769,23 +782,39 @@ class AnnoModTool(QMainWindow):
         path_layout = QHBoxLayout()
 
         self.line_xml_path = QLineEdit(saved_path)
+        self.line_xml_path.setFixedWidth(350)
         btn_browse = QPushButton("Browse...")
+        btn_browse.setFixedWidth(80)
         btn_browse.clicked.connect(self.browse_path_settings)
 
         path_layout.addWidget(self.line_xml_path)
         path_layout.addWidget(btn_browse)
+        path_layout.addStretch()
 
         set_layout.addWidget(QLabel("Base folder for XML files:"))
         set_layout.addLayout(path_layout)
-        self.btn_auto_load = QPushButton("Save")
-        self.btn_auto_load.clicked.connect(lambda: self.start_loading(self.line_xml_path.text()))
 
-        set_layout.addWidget(self.btn_auto_load)
+        lang_layout = QHBoxLayout()
+        self.combo_default_lang = QComboBox()
+        self.combo_default_lang.setFixedWidth(140)
+
+        lang_layout.addWidget(QLabel("Default Language:"))
+        lang_layout.addWidget(self.combo_default_lang)
+        lang_layout.addStretch()
+        set_layout.addLayout(lang_layout)
+
+        self.btn_save = QPushButton("Save Settings")
+        self.btn_save.setFixedWidth(200)
+        self.btn_save.clicked.connect(self.save_settings)
+
+        set_layout.addWidget(self.btn_save)
         set_layout.addStretch()
 
         # SIGNALS ######################################################################
 
         self.search.textChanged.connect(self.apply_filter)
+        self.cb_search_main_only.toggled.connect(self.apply_filter)
+        self.combo_lang.currentIndexChanged.connect(self.on_language_changed)
         self.btn_template_filter.clicked.connect(self.open_template_filter_popup)
         self.btn_buff_filter.clicked.connect(self.open_buff_filter_popup)
 
@@ -843,7 +872,7 @@ class AnnoModTool(QMainWindow):
 
         if text in self.assets_db:
             oasis_id = self.assets_db[text].get("oasis_id")
-            name = lang_dict.get(oasis_id, self.assets_db[text].get("fallback_name", "N/A"))
+            name = lang_dict.get(oasis_id) or self.assets_db[text].get("fallback_name", "N/A")
             return f"({name})"
 
         if text in lang_dict:
@@ -857,17 +886,30 @@ class AnnoModTool(QMainWindow):
 
         if folder:
             self.line_xml_path.setText(folder)
-            self.settings.setValue("Paths/xml_path", folder)
+
+    def save_settings(self):
+
+        folder = self.line_xml_path.text()
+        lang = self.combo_default_lang.currentText()
+
+        self.settings.setValue("Paths/xml_path", folder)
+        self.settings.setValue("Paths/default_lang", lang)
+
+        if folder and os.path.exists(folder):
+            self.start_loading(folder)
+
+        self.statusBar().showMessage("Settings saved", 3000)
 
     def start_loading(self, folder):
 
         if not folder or not os.path.exists(folder):
             return
 
-        self.lbl_status.setText(f"Loading: {os.path.basename(folder)}...")
+        self.statusBar().showMessage(f"Loading: {os.path.basename(folder)}...")
 
         self.worker = AnnoLoader(folder)
         self.worker.debug_log.connect(lambda m: self.debug_console.append(m))
+        self.worker.status.connect(self.statusBar().showMessage)
         self.worker.finished.connect(self.on_data_ready)
         self.worker.start()
 
@@ -882,6 +924,8 @@ class AnnoModTool(QMainWindow):
 
     def on_data_ready(self, a, t, langs, cat_list, t_lib, v_cat):
 
+        self.block_signals = True
+
         self.assets_db, self.templates_db, self.languages_db = a, t, langs
         self.structure_catalog_list = sorted(list(cat_list)) 
         self.template_library = t_lib
@@ -890,13 +934,25 @@ class AnnoModTool(QMainWindow):
         self.combo_lang.clear()
         self.combo_lang.addItems(sorted(langs.keys()))
 
+        self.combo_default_lang.clear()
+        self.combo_default_lang.addItems(sorted(langs.keys()))
+
+        saved_lang = self.settings.value("Paths/default_lang", "english")
+        idx = self.combo_lang.findText(saved_lang)
+
+        if idx != -1:
+            self.combo_lang.setCurrentIndex(idx)
+            self.combo_default_lang.setCurrentText(saved_lang)
+
+        self.block_signals = False
+
         self.filter_library()
 
         self._template_filter_selected = set()
         self._template_filter_refresh_from_assets(a)
         self.apply_filter()
 
-        self.lbl_status.setText(f"Loaded: {len(a)} assets")
+        self.statusBar().showMessage(f"Loaded: {len(a)} assets")
 
     def filter_library(self):
 
@@ -971,6 +1027,28 @@ class AnnoModTool(QMainWindow):
                 f = item.font(); f.setBold(is_active)
                 item.setFont(f)
 
+    def on_language_changed(self):
+
+        if self.block_signals:
+            return
+
+        # Save current selection to restore it after rebuilding the table
+        selected_guid = None
+        current_row = self.table.currentRow()
+
+        if current_row >= 0:
+            selected_guid = self.table.item(current_row, 0).text()
+
+        self.apply_filter()
+
+        # Re-select the asset and refresh all detail panes with the new language
+        if selected_guid:
+            for row in range(self.table.rowCount()):
+                if self.table.item(row, 0).text() == selected_guid:
+                    self.table.selectRow(row)
+                    self.load_asset_details(self.table.item(row, 0))
+                    break
+
     def apply_filter(self):
 
         query_text = self.search.text().lower()
@@ -992,13 +1070,16 @@ class AnnoModTool(QMainWindow):
             if template_filter is not None and info["template_name"] not in template_filter:
                 continue
 
+            display_name = lang_dict.get(info['oasis_id']) or info['fallback_name']
 
-            name = lang_dict.get(info['oasis_id'], info['fallback_name']).lower()
+            name = display_name.lower()
             template = info['template_name'].lower()
             
             searchable_content = [guid.lower(), name, template]
-            for tid in info.get('text_ids', []):
-                searchable_content.append(lang_dict.get(tid, "").lower())
+
+            if not self.cb_search_main_only.isChecked():
+                for tid in info.get('text_ids', []):
+                    searchable_content.append(lang_dict.get(tid, "").lower())
 
             asset_match = True
 
@@ -1025,7 +1106,7 @@ class AnnoModTool(QMainWindow):
                     guid_item.setText(guid)
 
                 self.table.setItem(row, 0, guid_item)
-                self.table.setItem(row, 1, QTableWidgetItem(lang_dict.get(info['oasis_id'], info['fallback_name'])))
+                self.table.setItem(row, 1, QTableWidgetItem(display_name))
                 self.table.setItem(row, 2, QTableWidgetItem(info['template_name']))
 
         self.table.setSortingEnabled(True)
@@ -1068,7 +1149,7 @@ class AnnoModTool(QMainWindow):
                 row = self.reverse_search_table.rowCount()
                 self.reverse_search_table.insertRow(row)
 
-                name = lang_dict.get(info['oasis_id'], info['fallback_name'])
+                name = lang_dict.get(info['oasis_id']) or info['fallback_name']
 
                 guid_item = QTableWidgetItem()
                 # Prefer numerical sorting for GUIDs if they are digits
