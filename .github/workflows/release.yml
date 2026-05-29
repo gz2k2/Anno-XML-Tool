@@ -45,13 +45,13 @@ jobs:
 
       - name: Build EXE with PyInstaller
         run: |
-          pyinstaller --onefile --windowed --icon "data/ui/AnnoXMLTool.ico" --name "AnnoXMLViewer" --add-data "data/ui/kofi5.webp;data/ui" --add-data "version.txt;." --add-data "data/ui/AnnoXMLTool.ico;data/ui" Anno_XML_Tool.py
+          pyinstaller --onefile --windowed --icon "data/ui/AnnoXMLTool.ico" --name "Anno_XML_Tool_v${{ steps.get_version.outputs.VERSION }}" --add-data "data/ui/kofi5.webp;data/ui" --add-data "version.txt;." --add-data "data/ui/AnnoXMLTool.ico;data/ui" Anno_XML_Tool.py
 
       - name: Create Release
         id: create_release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/AnnoXMLViewer.exe
+          files: dist/Anno_XML_Tool_v${{ steps.get_version.outputs.VERSION }}.exe
           name: ${{ github.ref_type == 'tag' && format('v{0}', steps.get_version.outputs.VERSION) || format('Development Build - v{0}', steps.get_version.outputs.VERSION) }}
           tag_name: v${{ steps.get_version.outputs.VERSION }}
           draft: false
