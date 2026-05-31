@@ -198,6 +198,7 @@ class AnnoLoader(QThread):
                                 "xml": ET.tostring(elem, encoding='unicode'),
                                 "template_name": template_name,
                                 "oasis_id": vals.findtext(".//Text/OasisId"),
+                                "visible_tech_name_id": vals.findtext(".//Tech/VisibleTechName"),
                                 "info_description_id": vals.findtext(".//Standard/InfoDescription"),
                                 "fallback_name": vals.findtext(".//Standard/Name") or "N/A",
                                 "text_ids": list(text_ids)
@@ -871,8 +872,10 @@ class AnnoModTool(QMainWindow):
         lang_dict = self.languages_db.get(lang, {})
 
         if text in self.assets_db:
-            oasis_id = self.assets_db[text].get("oasis_id")
-            name = lang_dict.get(oasis_id) or self.assets_db[text].get("fallback_name", "N/A")
+            info = self.assets_db[text]
+            oasis_id = info.get("oasis_id")
+            v_tech_id = info.get("visible_tech_name_id")
+            name = lang_dict.get(oasis_id) or lang_dict.get(v_tech_id) or info.get("fallback_name", "N/A")
             return f"({name})"
 
         if text in lang_dict:
@@ -1070,7 +1073,7 @@ class AnnoModTool(QMainWindow):
             if template_filter is not None and info["template_name"] not in template_filter:
                 continue
 
-            display_name = lang_dict.get(info['oasis_id']) or info['fallback_name']
+            display_name = lang_dict.get(info['oasis_id']) or lang_dict.get(info.get('visible_tech_name_id')) or info['fallback_name']
             
             # Initialize searchable_content with core elements that are always searched
             searchable_content = [
@@ -1166,7 +1169,7 @@ class AnnoModTool(QMainWindow):
                 row = self.reverse_search_table.rowCount()
                 self.reverse_search_table.insertRow(row)
 
-                name = lang_dict.get(info['oasis_id']) or info['fallback_name']
+                name = lang_dict.get(info['oasis_id']) or lang_dict.get(info.get('visible_tech_name_id')) or info['fallback_name']
 
                 guid_item = QTableWidgetItem()
                 # Prefer numerical sorting for GUIDs if they are digits

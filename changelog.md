@@ -1,2 +1,2 @@
 ### Changelog
-*   **Search by Internal Names**: The content of the `<Name>` tag is now always included in the search terms. This allows assets to be found by their technical identifiers even when a translated display name is active.
+*   **Improved Display Name Resolution**: The `<VisibleTechName>` tag is now considered for display name resolution and search, especially for Tech assets that often lack a standard `<Text/OasisId>`.
