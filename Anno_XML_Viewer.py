@@ -556,7 +556,7 @@ class AnnoModTool(QMainWindow):
         self.cb_search_main_only.setChecked(True)
         self.btn_template_filter.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        self._buff_filter_tags = ["Buffs", "BoostBuffs", "Effects", "FunctionalEffects", "TechResearchableTrigger", "UnlockReward"]
+        self._buff_filter_tags = ["Buffs", "BoostBuffs", "Effects", "FunctionalEffects", "TechResearchableTrigger", "UnlockReward", "Resources"]
         self._buff_filter_selected = set(self._buff_filter_tags)
         self.btn_buff_filter = QPushButton("Filter…")
         self.lbl_buff_filter = QLabel("Buffs/Effects")
@@ -1209,7 +1209,7 @@ class AnnoModTool(QMainWindow):
                     collect_recursive(b_xml)
 
             # Examine both list containers and direct fields
-            tags = getattr(self, "_buff_filter_tags", ["Buffs", "BoostBuffs", "Effects", "FunctionalEffects", "TechResearchableTrigger", "UnlockReward"])
+            tags = getattr(self, "_buff_filter_tags", ["Buffs", "BoostBuffs", "Effects", "FunctionalEffects", "TechResearchableTrigger", "UnlockReward", "Resources"])
             selected_tags = getattr(self, "_buff_filter_selected", set(tags))
             
             for tag in tags:
@@ -1231,6 +1231,8 @@ class AnnoModTool(QMainWindow):
                                 b_guid = item.findtext("TechResearchableTrigger")
                             elif tag == "UnlockReward":
                                 b_guid = item.findtext("UnlockReward")
+                            elif tag == "Resources":
+                                b_guid = item.findtext("Resource")
                             else:
                                 b_guid = item.findtext("GUID")
                             add_to_preview(b_guid, tag)
@@ -1328,7 +1330,7 @@ class AnnoModTool(QMainWindow):
                             if b_vals is not None:
                                 export_recursive(b_vals)
 
-                    for tag in ["Buffs", "BoostBuffs", "Effects", "FunctionalEffects", "TechResearchableTrigger", "UnlockReward"]:
+                    for tag in ["Buffs", "BoostBuffs", "Effects", "FunctionalEffects", "TechResearchableTrigger", "UnlockReward", "Resources"]:
                         for found_node in node.findall(f".//{tag}"):
                             items = found_node.findall("Item")
                             if items:
@@ -1342,6 +1344,8 @@ class AnnoModTool(QMainWindow):
                                         b_guid = item.findtext("TechResearchableTrigger")
                                     elif tag == "UnlockReward":
                                         b_guid = item.findtext("UnlockReward")
+                                    elif tag == "Resources":
+                                        b_guid = item.findtext("Resource")
                                     else:
                                         b_guid = item.findtext("GUID")
                                     process_guid(b_guid, tag)
