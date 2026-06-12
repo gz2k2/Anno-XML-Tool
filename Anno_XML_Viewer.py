@@ -552,11 +552,25 @@ class AnnoModTool(QMainWindow):
         self.lbl_filter = QLabel("Search-Filter")
         self.lbl_filter.setStyleSheet("color: #81c784; font-weight: bold; padding-left: 8px;")
         self.cb_search_main_only = QCheckBox("Search only GUID Text")
-        self.cb_search_main_only.setStyleSheet("font-size: 10px; color: #888; padding-left: 8px;")
+        self.cb_search_main_only.setStyleSheet("""
+            QCheckBox { font-size: 10px; color: white; padding-left: 8px; }
+            QCheckBox::indicator { border: 1px solid #555; width: 12px; height: 12px; background: #1e1e1e; }
+            QCheckBox::indicator:checked { background-color: #81c784; border: 1px solid #81c784; }
+        """)
+        self.cb_search_main_only.setToolTip("When checked, search is limited to GUID, Display Name, and Template.\nWhen unchecked, all text content within the asset is searched.")
         self.cb_search_main_only.setChecked(True)
         self.btn_template_filter.setCursor(Qt.CursorShape.PointingHandCursor)
-
-        self._buff_filter_tags = ["Buffs", "BoostBuffs", "Effects", "FunctionalEffects", "TechResearchableTrigger", "UnlockReward", "Resources"]
+        
+        self._buff_filter_tags = sorted([
+            "Buffs", 
+            "BoostBuffs", 
+            "Effects", 
+            "FunctionalEffects", 
+            "TechResearchableTrigger", 
+            "UnlockReward", 
+            "Resources", 
+            "AdditionalFunctionalEffect"
+        ])
         self._buff_filter_selected = set(self._buff_filter_tags)
         self.btn_buff_filter = QPushButton("Filter…")
         self.lbl_buff_filter = QLabel("Buffs/Effects")
@@ -1197,7 +1211,7 @@ class AnnoModTool(QMainWindow):
             def add_to_preview(guid, source_tag):
                 """Helper function to process and add an asset to the preview."""
                 if guid and guid in self.assets_db and guid not in seen_guids:
-                    seen_guids.add(guid)
+                    seen_guids.add(guid) #
                     
                     b_xml = ET.fromstring(self.assets_db[guid]["xml"])
                     indent(b_xml)
@@ -1209,7 +1223,7 @@ class AnnoModTool(QMainWindow):
                     collect_recursive(b_xml)
 
             # Examine both list containers and direct fields
-            tags = getattr(self, "_buff_filter_tags", ["Buffs", "BoostBuffs", "Effects", "FunctionalEffects", "TechResearchableTrigger", "UnlockReward", "Resources"])
+            tags = self._buff_filter_tags
             selected_tags = getattr(self, "_buff_filter_selected", set(tags))
             
             for tag in tags:
@@ -1330,7 +1344,7 @@ class AnnoModTool(QMainWindow):
                             if b_vals is not None:
                                 export_recursive(b_vals)
 
-                    for tag in ["Buffs", "BoostBuffs", "Effects", "FunctionalEffects", "TechResearchableTrigger", "UnlockReward", "Resources"]:
+                    for tag in self._buff_filter_tags:
                         for found_node in node.findall(f".//{tag}"):
                             items = found_node.findall("Item")
                             if items:

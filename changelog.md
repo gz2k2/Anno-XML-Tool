@@ -1,5 +1,7 @@
 ### Changelog
 
-* **Feature:** Added support for resolving and displaying GUIDs within `<Resource>` tags (e.g., technology rewards).
-* **UI:** Expanded the Buff/Effect filter and preview window to include a new "Resources" category.
-* **Export:** Enhanced the XML export logic to recursively include assets referenced via resource tags.
+* Added support for the `<AdditionalFunctionalEffect>` tag to Buffs/Effects.
+* Categories in the "Buff / Effect Filter" dialog are now sorted alphabetically.
+* Updated export logic to include linked assets via `AdditionalFunctionalEffect`.
+* Improved visibility of the "Search only GUID Text" checkbox with white text and a light green indicator.
+* Added an explanatory tooltip for the search mode toggle to clarify the filter behavior.

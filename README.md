@@ -13,7 +13,7 @@
 * **Data Export:** Easily export complete XML data—including all active effects and buffs (if applicable)—for external use or modding.
 
 ### Project Description
-**Anno XML Tool** is a lightweight, intuitive tool designed to streamline data exploration for *Anno* modders. Instead of digging through massive, disorganized XML files, this tool allows you to search for assets instantly using their **Name** or **GUID**. 
+**Anno XML Viewer** is a lightweight, intuitive tool designed to streamline data exploration for *Anno* modders. Instead of digging through massive, disorganized XML files, this tool allows you to search for assets instantly using their **Name** or **GUID**. 
  
 Once an asset is selected, the program dynamically maps out its entire ecosystem, displaying all connected **references**, **buffs**, and **effects** at a glance. With built-in **template filters**, you can isolate specific categories of assets effortlessly. Need to use the data elsewhere? The application features a comprehensive **export function** that packs the full XML data, along with its effects and buffs, into a clean file ready for your next modding project.
 
@@ -34,7 +34,6 @@ If this tool helps you, I would appreciate a coffee!
 *Note: This is a fan project and is not affiliated with Ubisoft.*
 
 ---
-
 
 ## Deutsche Version
 
