@@ -1,5 +1,7 @@
 ![Anno XML Viewer Screenshot](screenshot.jpg)
 ---
+📖 **[Detailed Documentation / Ausführliche Dokumentation](Documentation.md)**
+---
 # Anno XML Viewer
 
 ## English Version (Deutsche Version unterhalb)
