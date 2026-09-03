@@ -2,6 +2,7 @@ import sys
 import os
 import glob
 import re
+from datetime import datetime
 import xml.etree.ElementTree as ET
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLineEdit, QTableWidget, QTableWidgetItem, 
@@ -299,6 +300,67 @@ class _KofiLinkLabel(QLabel):
 
 class AnnoModTool(QMainWindow):
 
+    def append_debug_log(self, message):
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.debug_console.append(f"[{timestamp}] {message}")
+
+    def _load_xml_paths(self):
+
+        saved_paths = self.settings.value("Paths/xml_paths", [])
+        if isinstance(saved_paths, str):
+            saved_paths = [saved_paths] if saved_paths else []
+        elif saved_paths is None:
+            saved_paths = []
+
+        legacy_path = self.settings.value("Paths/xml_path", "")
+        if not saved_paths and legacy_path:
+            saved_paths = [str(legacy_path)]
+
+        return list(dict.fromkeys(str(path) for path in saved_paths if str(path).strip()))
+
+    def _save_xml_paths(self):
+
+        paths = [
+            self.list_xml_paths.item(row).text().strip()
+            for row in range(self.list_xml_paths.count())
+            if self.list_xml_paths.item(row).text().strip()
+        ]
+        paths = list(dict.fromkeys(paths))
+        self.xml_paths = paths
+        active_path = self.combo_xml_path.currentText()
+        self.block_signals = True
+        self.combo_xml_path.clear()
+        self.combo_xml_path.addItems(paths)
+        if active_path in paths:
+            self.combo_xml_path.setCurrentText(active_path)
+        elif paths:
+            self.combo_xml_path.setCurrentIndex(0)
+        self.block_signals = False
+        self.settings.setValue("Paths/xml_paths", paths)
+        self.settings.setValue("Paths/xml_path", self.combo_xml_path.currentText())
+
+    def on_xml_path_changed(self, index):
+
+        if self.block_signals or index < 0:
+            return
+
+        folder = self.combo_xml_path.itemText(index)
+        if folder and os.path.exists(folder):
+            self.start_loading(folder)
+
+    def remove_xml_path(self):
+
+        row = self.list_xml_paths.currentRow()
+        if row >= 0:
+            removed_path = self.list_xml_paths.item(row).text()
+            self.list_xml_paths.takeItem(row)
+            combo_index = self.combo_xml_path.findText(removed_path)
+            if combo_index >= 0:
+                self.combo_xml_path.removeItem(combo_index)
+            if self.combo_xml_path.count() and self.combo_xml_path.currentIndex() < 0:
+                self.combo_xml_path.setCurrentIndex(0)
+
     def _load_buff_filter_tags(self):
 
         saved_tags = self.settings.value("Buffs/tags", "")
@@ -541,6 +603,7 @@ class AnnoModTool(QMainWindow):
         config_path = os.path.join(base_dir, "config.ini")
         self.settings = QSettings(config_path, QSettings.Format.IniFormat)
 
+        self.xml_paths = self._load_xml_paths()
         saved_path = self.settings.value("Paths/xml_path", "")
         
         self.setStyleSheet("""
@@ -641,6 +704,12 @@ class AnnoModTool(QMainWindow):
         export_columns_layout.addLayout(export_mod_layout)
 
         nav.addWidget(self.combo_lang)
+
+        self.combo_xml_path = QComboBox()
+        self.combo_xml_path.setFixedWidth(300)
+        self.combo_xml_path.addItems(self.xml_paths)
+        self.combo_xml_path.setToolTip("Select the XML data folder to use")
+        nav.addWidget(self.combo_xml_path)
 
         nav.addWidget(self.search)
 
@@ -839,20 +908,26 @@ class AnnoModTool(QMainWindow):
         set_layout = QVBoxLayout(self.settings_tab)
 
         path_group = QGroupBox("Path Configuration")
-        path_layout = QHBoxLayout()
+        path_layout = QVBoxLayout(path_group)
 
-        self.line_xml_path = QLineEdit(saved_path)
-        self.line_xml_path.setFixedWidth(350)
+        self.list_xml_paths = QListWidget()
+        self.list_xml_paths.addItems(self.xml_paths)
+        self.list_xml_paths.setMinimumHeight(120)
         btn_browse = QPushButton("Browse...")
         btn_browse.setFixedWidth(80)
         btn_browse.clicked.connect(self.browse_path_settings)
+        self.btn_remove_xml_path = QPushButton("Remove Selected")
+        self.btn_remove_xml_path.clicked.connect(self.remove_xml_path)
 
-        path_layout.addWidget(self.line_xml_path)
-        path_layout.addWidget(btn_browse)
-        path_layout.addStretch()
+        path_layout.addWidget(self.list_xml_paths)
+        path_buttons_layout = QHBoxLayout()
+        path_buttons_layout.addWidget(btn_browse)
+        path_buttons_layout.addWidget(self.btn_remove_xml_path)
+        path_buttons_layout.addStretch()
+        path_layout.addLayout(path_buttons_layout)
 
         set_layout.addWidget(QLabel("Base folder for XML files:"))
-        set_layout.addLayout(path_layout)
+        set_layout.addWidget(path_group)
 
         lang_layout = QHBoxLayout()
         self.combo_default_lang = QComboBox()
@@ -894,6 +969,7 @@ class AnnoModTool(QMainWindow):
         self.search.textChanged.connect(self.apply_filter)
         self.cb_search_main_only.toggled.connect(self.apply_filter)
         self.combo_lang.currentIndexChanged.connect(self.on_language_changed)
+        self.combo_xml_path.currentIndexChanged.connect(self.on_xml_path_changed)
         self.btn_template_filter.clicked.connect(self.open_template_filter_popup)
         self.btn_buff_filter.clicked.connect(self.open_buff_filter_popup)
 
@@ -933,8 +1009,9 @@ class AnnoModTool(QMainWindow):
                 highlighter = XMLHighlighter(view.document())
                 self.highlighters.append(highlighter)
 
-        if saved_path and os.path.exists(saved_path):
-            self.start_loading(saved_path)
+        active_path = self.combo_xml_path.currentText()
+        if active_path and os.path.exists(active_path):
+            self.start_loading(active_path)
 
 
     # ASSET LOGIC ##################################################################
@@ -967,11 +1044,18 @@ class AnnoModTool(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "Select XML base folder")
 
         if folder:
-            self.line_xml_path.setText(folder)
+            existing_paths = [self.list_xml_paths.item(row).text() for row in range(self.list_xml_paths.count())]
+            if folder not in existing_paths:
+                self.list_xml_paths.addItem(folder)
+            if self.combo_xml_path.findText(folder) == -1:
+                self.combo_xml_path.addItem(folder)
+            self.combo_xml_path.setCurrentText(folder)
 
     def save_settings(self):
 
-        folder = self.line_xml_path.text()
+        paths = [self.list_xml_paths.item(row).text().strip() for row in range(self.list_xml_paths.count())]
+        paths = list(dict.fromkeys(path for path in paths if path))
+        self.xml_paths = paths
         lang = self.combo_default_lang.currentText()
         tags = sorted(set(
             self.list_buff_filter_tags.item(row).text().strip()
@@ -990,12 +1074,14 @@ class AnnoModTool(QMainWindow):
         self._buff_filter_tags = tags
         self._buff_filter_selected = set(tags)
 
-        self.settings.setValue("Paths/xml_path", folder)
+        self.settings.setValue("Paths/xml_paths", paths)
+        self.settings.setValue("Paths/xml_path", self.combo_xml_path.currentText())
         self.settings.setValue("Paths/default_lang", lang)
         self.settings.setValue("Buffs/tags", "\n".join(tags))
 
-        if folder and os.path.exists(folder):
-            self.start_loading(folder)
+        active_path = self.combo_xml_path.currentText()
+        if active_path and os.path.exists(active_path):
+            self.start_loading(active_path)
 
         self.statusBar().showMessage("Settings saved", 3000)
 
@@ -1021,7 +1107,7 @@ class AnnoModTool(QMainWindow):
         self.statusBar().showMessage(f"Loading: {os.path.basename(folder)}...")
 
         self.worker = AnnoLoader(folder)
-        self.worker.debug_log.connect(lambda m: self.debug_console.append(m))
+        self.worker.debug_log.connect(self.append_debug_log)
         self.worker.status.connect(self.statusBar().showMessage)
         self.worker.finished.connect(self.on_data_ready)
         self.worker.start()
@@ -1031,8 +1117,10 @@ class AnnoModTool(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "Select folder")
 
         if folder:
-            self.line_xml_path.setText(folder)
-            self.settings.setValue("Paths/xml_path", folder)
+            if self.combo_xml_path.findText(folder) == -1:
+                self.combo_xml_path.addItem(folder)
+            self.combo_xml_path.setCurrentText(folder)
+            self._save_xml_paths()
             self.start_loading(folder)
 
     def on_data_ready(self, a, t, langs, cat_list, t_lib, v_cat):
