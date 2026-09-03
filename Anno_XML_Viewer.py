@@ -782,7 +782,29 @@ class AnnoModTool(QMainWindow):
         ed_layout.addWidget(self.v_splitter)
         self.v_splitter.setSizes([200, 600])
 
-        # TAB 3: STRUKTUR BIBLIOTHEK ###################################################
+        # TAB 3: TEMPLATES ###########################################################
+
+        self.templates_tab = QWidget()
+        self.tabs.addTab(self.templates_tab, "Templates")
+        templates_layout = QVBoxLayout(self.templates_tab)
+
+        self.templates_filter = QLineEdit()
+        self.templates_filter.setPlaceholderText("Search templates...")
+        templates_layout.addWidget(self.templates_filter)
+
+        self.templates_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.templates_list = QListWidget()
+        self.templates_preview = QTextEdit()
+        self.templates_preview.setReadOnly(True)
+
+        self.templates_splitter.addWidget(self.templates_list)
+        self.templates_splitter.addWidget(self.templates_preview)
+
+        templates_layout.addWidget(self.templates_splitter)
+        self.templates_filter.textChanged.connect(self.filter_templates)
+        self.templates_list.itemClicked.connect(self.preview_template)
+
+        # TAB 4: STRUKTUR BIBLIOTHEK ###################################################
 
         self.lib_tab = QWidget()
         self.tabs.addTab(self.lib_tab, "Structure Library")   
@@ -804,13 +826,13 @@ class AnnoModTool(QMainWindow):
         self.lib_filter.textChanged.connect(self.filter_library)
         self.lib_list.itemClicked.connect(self.preview_library_item)
 
-        # TAB 4: ENGINE LOG ############################################################
+        # TAB 5: ENGINE LOG ############################################################
 
         self.debug_console = QTextEdit()
         self.debug_console.setReadOnly(True)
         self.tabs.addTab(self.debug_console, "Engine Log")
 
-        # TAB 5: EINSTELLUNGEN #########################################################
+        # TAB 6: EINSTELLUNGEN #########################################################
 
         self.settings_tab = QWidget()
         self.tabs.addTab(self.settings_tab, "Settings")
@@ -887,6 +909,7 @@ class AnnoModTool(QMainWindow):
         self.xml_views = [
             self.xml_editor, 
             self.lib_preview, 
+            self.templates_preview,
             self.buff_view,
             self.debug_console
         ]
@@ -1037,6 +1060,7 @@ class AnnoModTool(QMainWindow):
         self.block_signals = False
 
         self.filter_library()
+        self.filter_templates()
 
         self._template_filter_selected = set()
         self._template_filter_refresh_from_assets(a)
@@ -1052,6 +1076,29 @@ class AnnoModTool(QMainWindow):
         for path in self.structure_catalog_list:
             if query in path.lower():
                 self.lib_list.addItem(path)
+
+    def filter_templates(self):
+
+        self.templates_list.clear()
+        query = self.templates_filter.text().strip().lower()
+
+        for name in sorted(self.templates_db):
+            if query in name.lower():
+                self.templates_list.addItem(name)
+
+    def preview_template(self, item):
+
+        template_xml = self.templates_db.get(item.text())
+
+        if not template_xml:
+            self.templates_preview.clear()
+            return
+
+        element = ET.fromstring(template_xml)
+        indent(element)
+        self.templates_preview.setPlainText(
+            ET.tostring(element, encoding="unicode")
+        )
 
     def preview_library_item(self, item):
 
