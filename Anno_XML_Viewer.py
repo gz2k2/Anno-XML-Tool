@@ -16,6 +16,18 @@ from PyQt6.QtGui import QDesktopServices
 
 APP_NAME = "Anno XML Viewer by gz2k2"
 
+DEFAULT_BUFF_FILTER_TAGS = [
+    "AdditionalFunctionalEffect",
+    "BoostBuffs",
+    "Buffs",
+    "Effects",
+    "FunctionalEffects",
+    "Resources",
+    "TechResearchableTrigger",
+    "UnlockReward",
+    "MythicEffect",
+]
+
 
 ################################################################################
 # UTILITY FUNCTIONS
@@ -286,6 +298,26 @@ class _KofiLinkLabel(QLabel):
 
 
 class AnnoModTool(QMainWindow):
+
+    def _load_buff_filter_tags(self):
+
+        saved_tags = self.settings.value("Buffs/tags", "")
+        saved_tags = str(saved_tags).replace("\\n", "\n")
+        tags = [tag.strip() for tag in re.split(r"[,\n]", saved_tags) if tag.strip()]
+
+        return sorted(set(tags or DEFAULT_BUFF_FILTER_TAGS))
+
+    def _reference_guid(self, tag, node):
+
+        reference_fields = {
+            "Effects": "EffectAsset",
+            "FunctionalEffects": "FunctionalEffect",
+            "TechResearchableTrigger": "TechResearchableTrigger",
+            "UnlockReward": "UnlockReward",
+            "Resources": "Resource",
+        }
+
+        return node.findtext(reference_fields.get(tag, "GUID"))
 
     def _template_filter_refresh_from_assets(self, assets_db):
 
@@ -561,16 +593,7 @@ class AnnoModTool(QMainWindow):
         self.cb_search_main_only.setChecked(True)
         self.btn_template_filter.setCursor(Qt.CursorShape.PointingHandCursor)
         
-        self._buff_filter_tags = sorted([
-            "Buffs", 
-            "BoostBuffs", 
-            "Effects", 
-            "FunctionalEffects", 
-            "TechResearchableTrigger", 
-            "UnlockReward", 
-            "Resources", 
-            "AdditionalFunctionalEffect"
-        ])
+        self._buff_filter_tags = self._load_buff_filter_tags()
         self._buff_filter_selected = set(self._buff_filter_tags)
         self.btn_buff_filter = QPushButton("Filter…")
         self.lbl_buff_filter = QLabel("Buffs/Effects")
@@ -818,6 +841,25 @@ class AnnoModTool(QMainWindow):
         lang_layout.addStretch()
         set_layout.addLayout(lang_layout)
 
+        set_layout.addWidget(QLabel("Buff/Effect XML tags:"))
+        self.list_buff_filter_tags = QListWidget()
+        self.list_buff_filter_tags.setMinimumHeight(180)
+        for tag in self._buff_filter_tags:
+            item = QListWidgetItem(tag)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+            self.list_buff_filter_tags.addItem(item)
+        set_layout.addWidget(self.list_buff_filter_tags)
+
+        tag_buttons_layout = QHBoxLayout()
+        self.btn_add_buff_tag = QPushButton("Add Tag")
+        self.btn_remove_buff_tag = QPushButton("Remove Selected Tag")
+        self.btn_add_buff_tag.clicked.connect(self.add_buff_filter_tag)
+        self.btn_remove_buff_tag.clicked.connect(self.remove_buff_filter_tag)
+        tag_buttons_layout.addWidget(self.btn_add_buff_tag)
+        tag_buttons_layout.addWidget(self.btn_remove_buff_tag)
+        tag_buttons_layout.addStretch()
+        set_layout.addLayout(tag_buttons_layout)
+
         self.btn_save = QPushButton("Save Settings")
         self.btn_save.setFixedWidth(200)
         self.btn_save.clicked.connect(self.save_settings)
@@ -908,14 +950,45 @@ class AnnoModTool(QMainWindow):
 
         folder = self.line_xml_path.text()
         lang = self.combo_default_lang.currentText()
+        tags = sorted(set(
+            self.list_buff_filter_tags.item(row).text().strip()
+            for row in range(self.list_buff_filter_tags.count())
+            if self.list_buff_filter_tags.item(row).text().strip()
+        ))
+
+        if not tags:
+            tags = sorted(DEFAULT_BUFF_FILTER_TAGS)
+            self.list_buff_filter_tags.clear()
+            for tag in tags:
+                item = QListWidgetItem(tag)
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+                self.list_buff_filter_tags.addItem(item)
+
+        self._buff_filter_tags = tags
+        self._buff_filter_selected = set(tags)
 
         self.settings.setValue("Paths/xml_path", folder)
         self.settings.setValue("Paths/default_lang", lang)
+        self.settings.setValue("Buffs/tags", "\n".join(tags))
 
         if folder and os.path.exists(folder):
             self.start_loading(folder)
 
         self.statusBar().showMessage("Settings saved", 3000)
+
+    def add_buff_filter_tag(self):
+
+        item = QListWidgetItem("NewTag")
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+        self.list_buff_filter_tags.addItem(item)
+        self.list_buff_filter_tags.setCurrentItem(item)
+        self.list_buff_filter_tags.editItem(item)
+
+    def remove_buff_filter_tag(self):
+
+        row = self.list_buff_filter_tags.currentRow()
+        if row >= 0:
+            self.list_buff_filter_tags.takeItem(row)
 
     def start_loading(self, folder):
 
@@ -1237,18 +1310,7 @@ class AnnoModTool(QMainWindow):
                         # Case A: List structure (container with <Item>s)
                         for item in items:
                             b_guid = None
-                            if tag == "Effects":
-                                b_guid = item.findtext("EffectAsset")
-                            elif tag == "FunctionalEffects":
-                                b_guid = item.findtext("FunctionalEffect")
-                            elif tag == "TechResearchableTrigger":
-                                b_guid = item.findtext("TechResearchableTrigger")
-                            elif tag == "UnlockReward":
-                                b_guid = item.findtext("UnlockReward")
-                            elif tag == "Resources":
-                                b_guid = item.findtext("Resource")
-                            else:
-                                b_guid = item.findtext("GUID")
+                            b_guid = self._reference_guid(tag, item)
                             add_to_preview(b_guid, tag)
                     
                     elif node.text and node.text.strip():
@@ -1350,18 +1412,7 @@ class AnnoModTool(QMainWindow):
                             if items:
                                 for item in items:
                                     b_guid = None
-                                    if tag == "Effects":
-                                        b_guid = item.findtext("EffectAsset")
-                                    elif tag == "FunctionalEffects":
-                                        b_guid = item.findtext("FunctionalEffect")
-                                    elif tag == "TechResearchableTrigger":
-                                        b_guid = item.findtext("TechResearchableTrigger")
-                                    elif tag == "UnlockReward":
-                                        b_guid = item.findtext("UnlockReward")
-                                    elif tag == "Resources":
-                                        b_guid = item.findtext("Resource")
-                                    else:
-                                        b_guid = item.findtext("GUID")
+                                    b_guid = self._reference_guid(tag, item)
                                     process_guid(b_guid, tag)
                             elif found_node.text and found_node.text.strip():
                                 process_guid(found_node.text.strip(), tag)
