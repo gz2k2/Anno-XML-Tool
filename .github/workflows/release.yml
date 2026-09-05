@@ -52,7 +52,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/Anno_XML_Viewer_v${{ steps.get_version.outputs.VERSION }}.exe
-          name: ${{ github.ref_type == 'tag' && format('v{0}', steps.get_version.outputs.VERSION) || format('Development Build - v{0}', steps.get_version.outputs.VERSION) }}
+          name: ${{ github.ref_type == 'tag' && format('v{0}', steps.get_version.outputs.VERSION) || format('v{0}', steps.get_version.outputs.VERSION) }}
           tag_name: v${{ steps.get_version.outputs.VERSION }}
           draft: false
           prerelease: ${{ github.ref_type != 'tag' }}
