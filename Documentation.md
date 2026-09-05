@@ -1,40 +1,64 @@
 # Anno XML Viewer Documentation
 
-## English Version (deuterliche Version unterhalb)
+## English Version
 ---
 *Support the project:*
 <a href="https://ko-fi.com/gz2k2" target="_blank">Buy Me A Coffee</a>
 ---
+
 ### 1. Introduction
-The **Anno XML Viewer** is a specialized tool for modders of the *Anno* series. It allows for high-performance browsing, searching, and analyzing of game assets from `assets.xml`. It automatically resolves text IDs into readable strings and maps relationships between assets (e.g., buffs and effects).
+The **Anno XML Viewer** is a specialized tool for modders of the *Anno* series. It allows high-performance browsing, searching, and analysis of game assets from `assets.xml`. The tool resolves text IDs into readable strings, maps relationships between assets, and helps inspect linked buffs, effects, templates, and XML structures.
 
 ### 2. Getting Started
-1.  **Select Data Folder:** On the first start, go to the **Settings** tab. Use "Browse" to select the folder containing your game XMLs (must contain `assets.xml`; `templates.xml` and `texts_*.xml` are highly recommended for full functionality).
-2.  **Language:** Select your preferred display language in the settings.
-3.  **Loading:** The tool parses the data in the background. Check the **Engine Log** tab to see the progress.
+1. **Select Data Folder:** Open the **Settings** tab and use **Browse...** to add one or more folders containing your XML files. A folder must contain `assets.xml`; `templates.xml` and `texts_*.xml` are recommended for full functionality.
+2. **Choose Active Folder:** Use the XML path dropdown in the top bar to switch between saved XML folders. Switching the active folder reloads the data.
+3. **Language:** Select the display language in the top bar. Set the default language in **Settings**.
+4. **Loading:** The tool parses the data in the background. Check the **Engine Log** tab for progress and status messages.
 
 ### 3. Core Features
 
 #### Asset Editor & Search
-*   **Search Bar:** Enter terms to find assets. 
-    *   Use spaces for "AND" logic (e.g., `farm sheep`).
-    *   Use a minus prefix to exclude terms (e.g., `farm -module`).
-*   **Search Depth:** By default, it searches GUIDs, Names, and Templates. Uncheck **"Search only GUID Text"** to search through all text content within the assets (slower but more thorough).
-*   **Template Filter:** Click the "Template Filter..." button to isolate specific categories (e.g., only "Factory" or "Participant").
+* **Search Bar:** Enter one or more terms to find assets.
+  * Spaces use "AND" logic, for example `farm sheep`.
+  * A minus prefix excludes terms, for example `farm -module`.
+* **Search Depth:** By default, the search checks GUID, display name, and template. Disable **Search only GUID Text** to search all XML text content inside assets. This is slower but more thorough.
+* **Template Filter:** Click **Template Filter...** to select or deselect template categories. The popup includes a template search field plus **Select All** and **Deselect All** buttons.
+* **Asset Table:** Shows GUID, display name, and template. Selecting a row updates the analysis panes.
+
+#### Watchlist
+* The **WATCHLIST** panel stores selected assets by GUID for quick access.
+* Use **+** to add the currently selected asset.
+* Use **-** to remove the selected watchlist entry.
+* Watchlist entries are saved in `config.ini` and restored on restart.
 
 #### Analysis Panes
-*   **Property Tree (Left):** Displays the `<Values>` section of an asset in a readable tree format. It automatically resolves GUIDs and Text-IDs into names.
-*   **XML View (Middle):** Shows the raw, formatted XML code of the selected asset.
-*   **Buffs / Effects (Right):** Automatically finds and displays all assets referenced as buffs or effects. Use the "Filter..." button above to toggle which reference tags (like `BoostBuffs` or `UnlockReward`) should be tracked.
-*   **References (Top Right):** Shows "Reverse Search" results—every asset in the database that points to the currently selected GUID.
+* **Property Tree:** Displays the `<Values>` section of the selected asset in a readable tree. GUIDs and text IDs are resolved into names where possible.
+* **XML View:** Shows the raw, formatted XML of the selected asset.
+* **Buffs / Effects:** Shows linked assets referenced through configured buff/effect tags. Use the **Filter...** button to select which categories are shown.
+* **References:** Shows reverse-search results: assets that reference the currently selected GUID.
+
+#### Templates
+The **Templates** tab lists templates from `templates.xml`.
+* Use the search field to filter templates.
+* Selecting a template shows its formatted XML preview.
 
 #### Structure Library
-This tab provides a catalog of all unique XML tag paths found in the loaded data.
-*   Selecting a path shows a structural preview of how this tag is used in the game templates.
-*   It lists all unique values found for that specific tag across the entire dataset.
+The **Structure Library** tab catalogs unique XML tag paths found in the loaded data.
+* Use the search field to filter paths.
+* Selecting a path shows a structural preview and known values for that path across the dataset.
+
+#### Engine Log
+The **Engine Log** tab displays background loading progress, parser messages, warnings, and errors.
+
+#### Settings
+The **Settings** tab stores application configuration.
+* **Path Configuration:** Add XML folders with **Browse...** and remove saved folders with **Remove Selected**.
+* **Default Language:** Choose the language selected by default after loading.
+* **Buff/Effect XML tags:** Edit the tag list used to detect linked buffs and effects. Use **Add Tag** and **Remove Selected Tag** to manage entries.
+* **Save Settings:** Writes paths, default language, and buff/effect tags to `config.ini`, then reloads the active XML folder.
 
 #### Export
-The **EXPORT XML** button saves the selected asset into a new XML file. Crucially, it performs a **recursive export**: it also includes the full XML data of all detected buffs and effects (based on your active Buff Filter), making it an excellent tool for creating standalone mod snippets.
+The **EXPORT XML** button saves the selected asset into a new XML file. It performs a recursive export: detected buffs and effects are included based on the active Buff/Effect filter, which makes it useful for creating standalone mod snippets.
 
 ---
 
@@ -43,47 +67,71 @@ The **EXPORT XML** button saves the selected asset into a new XML file. Cruciall
 *Support the project:*
 <a href="https://ko-fi.com/gz2k2" target="_blank">Buy Me A Coffee</a>
 ---
+
 ### 1. Einleitung
-Der **Anno XML Viewer** ist ein spezialisiertes Werkzeug für Modder der *Anno*-Serie. Er ermöglicht das performante Durchsuchen und Analysieren von Game-Assets aus der `assets.xml`. Das Tool löst Text-IDs automatisch in Klartext auf und bildet Beziehungen zwischen Assets (z. B. Buffs und Effekte) ab.
+Der **Anno XML Viewer** ist ein spezialisiertes Werkzeug fuer Modder der *Anno*-Serie. Er ermoeglicht schnelles Durchsuchen, Anzeigen und Analysieren von Game-Assets aus `assets.xml`. Das Tool loest Text-IDs in lesbare Texte auf, zeigt Beziehungen zwischen Assets und hilft beim Pruefen von Buffs, Effekten, Templates und XML-Strukturen.
 
 ### 2. Erste Schritte
-1.  **Datenordner wählen:** Navigieren Sie beim ersten Start zum Reiter **Settings**. Wählen Sie über "Browse" den Ordner aus, in dem Ihre XML-Dateien liegen (erfordert `assets.xml`; `templates.xml` und `texts_*.xml` werden für den vollen Funktionsumfang dringend empfohlen).
-2.  **Sprache:** Wählen Sie in den Einstellungen die gewünschte Anzeigesprache.
-3.  **Ladevorgang:** Das Programm lädt die Daten im Hintergrund. Der Fortschritt kann im Reiter **Engine Log** verfolgt werden.
+1. **Datenordner waehlen:** Oeffne den Reiter **Settings** und fuege mit **Browse...** einen oder mehrere Ordner mit XML-Dateien hinzu. Ein Ordner muss `assets.xml` enthalten; `templates.xml` und `texts_*.xml` werden fuer den vollen Funktionsumfang empfohlen.
+2. **Aktiven Ordner waehlen:** Ueber das XML-Pfad-Dropdown in der oberen Leiste kannst du zwischen gespeicherten XML-Ordnern wechseln. Beim Wechsel werden die Daten neu geladen.
+3. **Sprache:** Waehle die Anzeigesprache in der oberen Leiste. Die Standardsprache wird unter **Settings** festgelegt.
+4. **Ladevorgang:** Das Programm laedt die Daten im Hintergrund. Fortschritt und Statusmeldungen stehen im Reiter **Engine Log**.
 
 ### 3. Hauptfunktionen
 
 #### Asset Editor & Suche
-*   **Suchleiste:** Geben Sie Begriffe ein, um Assets zu finden.
-    *   Leerzeichen entsprechen einer "UND"-Logik (z. B. `farm sheep`).
-    *   Ein Minus-Präfix schließt Begriffe aus (z. B. `farm -module`).
-*   **Suchtiefe:** Standardmäßig werden GUID, Name und Template durchsucht. Deaktivieren Sie **"Search only GUID Text"**, um sämtliche Textinhalte innerhalb der Assets zu durchsuchen (langsamer, aber gründlicher).
-*   **Template-Filter:** Nutzen Sie den Button "Template Filter...", um die Suche auf bestimmte Kategorien (z. B. nur "Factory" oder "Participant") zu begrenzen.
+* **Suchleiste:** Gib einen oder mehrere Begriffe ein, um Assets zu finden.
+  * Leerzeichen verwenden eine "UND"-Logik, zum Beispiel `farm sheep`.
+  * Ein Minus-Praefix schliesst Begriffe aus, zum Beispiel `farm -module`.
+* **Suchtiefe:** Standardmaessig durchsucht das Tool GUID, Anzeigename und Template. Deaktiviere **Search only GUID Text**, um den gesamten XML-Textinhalt der Assets zu durchsuchen. Das ist langsamer, aber gruendlicher.
+* **Template-Filter:** Mit **Template Filter...** kannst du Template-Kategorien auswaehlen oder abwaehlen. Das Popup enthaelt eine Suche sowie **Select All** und **Deselect All**.
+* **Asset-Tabelle:** Zeigt GUID, Anzeigename und Template. Die Auswahl einer Zeile aktualisiert die Analyse-Fenster.
+
+#### Watchlist
+* Das **WATCHLIST**-Fenster speichert ausgewaehlte Assets per GUID fuer schnellen Zugriff.
+* Mit **+** wird das aktuell ausgewaehlte Asset hinzugefuegt.
+* Mit **-** wird der ausgewaehlte Watchlist-Eintrag entfernt.
+* Die Watchlist wird in `config.ini` gespeichert und beim Neustart wiederhergestellt.
 
 #### Analyse-Fenster
-*   **Property Tree (Links):** Zeigt die `<Values>`-Sektion eines Assets in einer Baumstruktur an. GUIDs und Text-IDs werden automatisch in Namen aufgelöst.
-*   **XML View (Mitte):** Zeigt den rohen, formatierten XML-Code des gewählten Assets.
-*   **Buffs / Effects (Rechts):** Findet und zeigt automatisch alle Assets an, die als Buffs oder Effekte verknüpft sind. Über den "Filter..."-Button lässt sich steuern, welche Tags (z. B. `BoostBuffs` oder `UnlockReward`) berücksichtigt werden.
-*   **References (Oben Rechts):** Zeigt eine "Rückwärtssuche" – jedes Asset in der Datenbank, das auf die aktuell ausgewählte GUID verweist.
+* **Property Tree:** Zeigt die `<Values>`-Sektion des ausgewaehlten Assets als Baumstruktur. GUIDs und Text-IDs werden soweit moeglich in Namen aufgeloest.
+* **XML View:** Zeigt den rohen, formatierten XML-Code des ausgewaehlten Assets.
+* **Buffs / Effects:** Zeigt verknuepfte Assets, die ueber konfigurierte Buff-/Effect-Tags referenziert werden. Mit **Filter...** steuerst du, welche Kategorien angezeigt werden.
+* **References:** Zeigt die Rueckwaertssuche: Assets, die auf die aktuell ausgewaehlte GUID verweisen.
 
-#### Structure Library (Struktur-Bibliothek)
-Dieser Reiter bietet einen Katalog aller einzigartigen XML-Pfade, die in den geladenen Daten gefunden wurden.
-*   Die Auswahl eines Pfades zeigt eine Struktur-Vorschau, wie dieser Tag in den Templates verwendet wird.
-*   Zudem werden alle einzigartigen Werte aufgelistet, die für diesen spezifischen Tag im gesamten Datensatz existieren.
+#### Templates
+Der Reiter **Templates** listet Templates aus `templates.xml`.
+* Mit dem Suchfeld filterst du die Template-Liste.
+* Die Auswahl eines Templates zeigt eine formatierte XML-Vorschau.
+
+#### Structure Library
+Der Reiter **Structure Library** katalogisiert einzigartige XML-Pfade aus den geladenen Daten.
+* Mit dem Suchfeld filterst du die Pfade.
+* Die Auswahl eines Pfades zeigt eine Struktur-Vorschau und bekannte Werte dieses Pfades im Datensatz.
+
+#### Engine Log
+Der Reiter **Engine Log** zeigt Ladefortschritt, Parser-Meldungen, Warnungen und Fehler.
+
+#### Settings
+Der Reiter **Settings** verwaltet die Anwendungskonfiguration.
+* **Path Configuration:** XML-Ordner mit **Browse...** hinzufuegen und gespeicherte Ordner mit **Remove Selected** entfernen.
+* **Default Language:** Legt die Sprache fest, die nach dem Laden standardmaessig verwendet wird.
+* **Buff/Effect XML tags:** Bearbeitet die Tag-Liste, mit der verknuepfte Buffs und Effekte erkannt werden. Eintraege werden mit **Add Tag** und **Remove Selected Tag** verwaltet.
+* **Save Settings:** Speichert Pfade, Standardsprache und Buff-/Effect-Tags in `config.ini` und laedt den aktiven XML-Ordner neu.
 
 #### Export
-Der **EXPORT XML**-Button speichert das gewählte Asset in eine neue XML-Datei. Das Besondere: Es erfolgt ein **rekursiver Export**. Das bedeutet, dass auch die vollständigen XML-Daten aller erkannten Buffs und Effekte (basierend auf Ihrem aktiven Buff-Filter) mit exportiert werden. Ideal zum Erstellen von Mod-Vorlagen.
+Der Button **EXPORT XML** speichert das ausgewaehlte Asset in eine neue XML-Datei. Dabei erfolgt ein rekursiver Export: Erkannte Buffs und Effekte werden basierend auf dem aktiven Buff-/Effect-Filter mit exportiert. Das ist nuetzlich zum Erstellen eigenstaendiger Mod-Snippets.
 
 ---
 
 ### Technical Details / Technische Details
 
 **Requirements / Anforderungen:**
-*   Python 3.13+ (if running from source)
-*   PyQt6
+* Python 3.13+ if running from source
+* PyQt6
 
-**Configuration:**
-Settings are stored in `config.ini` in the application directory.
+**Configuration / Konfiguration:**
+Settings are stored in `config.ini` in the application directory. This includes XML paths, active/default language, buff/effect tags, and watchlist GUIDs.
 
 **Credits:**
 Created by gz2k2. This is a fan project and not affiliated with Ubisoft.
