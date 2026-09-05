@@ -369,6 +369,20 @@ class AnnoModTool(QMainWindow):
 
         return sorted(set(tags or DEFAULT_BUFF_FILTER_TAGS))
 
+    def _load_watchlist_guids(self):
+
+        saved_guids = self.settings.value("Watchlist/guids", "")
+        if isinstance(saved_guids, list):
+            guids = saved_guids
+        else:
+            guids = str(saved_guids).replace("\\n", "\n").splitlines()
+
+        return list(dict.fromkeys(guid.strip() for guid in guids if guid.strip()))
+
+    def _save_watchlist_guids(self):
+
+        self.settings.setValue("Watchlist/guids", "\n".join(self.watchlist_guids))
+
     def _reference_guid(self, tag, node):
 
         reference_fields = {
@@ -612,6 +626,7 @@ class AnnoModTool(QMainWindow):
                 background-color: #1e1e1e; border: 1px solid #333; gridline-color: #333; border-radius: 4px; 
             }
             QHeaderView::section { background-color: #252525; padding: 4px; border: 1px solid #333; }
+            QTableCornerButton::section { background-color: #252525; border: 1px solid #333; }
             QPushButton { background-color: #333; border: 1px solid #444; padding: 6px; border-radius: 4px; }
             QPushButton:hover { background-color: #444; }
             QLineEdit, QComboBox { background-color: #1e1e1e; border: 1px solid #444; padding: 4px; color: white; }
@@ -623,6 +638,7 @@ class AnnoModTool(QMainWindow):
         self.assets_db, self.templates_db, self.languages_db = {}, {}, {}
         self.template_library = {}
         self.structure_catalog_list = []
+        self.watchlist_guids = self._load_watchlist_guids()
         self.current_xml_root = None
         self.block_signals = False
 
@@ -745,6 +761,7 @@ class AnnoModTool(QMainWindow):
         self.table.setHorizontalHeaderItem(0, QTableWidgetItem("GUID"))
         self.table.setHorizontalHeaderItem(1, QTableWidgetItem("Display Name"))
         self.table.setHorizontalHeaderItem(2, QTableWidgetItem("Template"))
+        self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().sortIndicatorChanged.connect(self.update_header_styling)
         self.table.horizontalHeader().setSortIndicator(1, Qt.SortOrder.AscendingOrder)
         self.update_header_styling(1, Qt.SortOrder.AscendingOrder)
@@ -769,6 +786,7 @@ class AnnoModTool(QMainWindow):
         rev_header.setStyleSheet("background-color: #252525; padding: 4px; font-weight: bold; border: 1px solid #333; color: #81c784;")
         self.reverse_search_table = QTableWidget(0, 3)
         self.reverse_search_table.setHorizontalHeaderLabels(["GUID", "Display Name", "Template"])
+        self.reverse_search_table.verticalHeader().setVisible(False)
 
         # Column split 1:3:2 (GUID : Name : Template)
         rev_header_view = self.reverse_search_table.horizontalHeader()
@@ -784,13 +802,53 @@ class AnnoModTool(QMainWindow):
         self.reverse_search_table.horizontalHeader().setSortIndicator(1, Qt.SortOrder.AscendingOrder)
         self.update_header_styling(1, Qt.SortOrder.AscendingOrder, target_table=self.reverse_search_table)
 
+        self.reverse_search_table.setSortingEnabled(True)
         self.reverse_search_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.reverse_search_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         rev_layout.addWidget(rev_header)
         rev_layout.addWidget(self.reverse_search_table)
 
+        watch_container = QWidget()
+        watch_layout = QVBoxLayout(watch_container)
+        watch_layout.setContentsMargins(0, 0, 0, 0)
+        watch_layout.setSpacing(0)
+
+        watch_header_layout = QHBoxLayout()
+        watch_header_layout.setContentsMargins(0, 0, 0, 0)
+        watch_header_layout.setSpacing(4)
+
+        watch_header = QLabel(" WATCHLIST")
+        watch_header.setStyleSheet("background-color: #252525; padding: 4px; font-weight: bold; border: 1px solid #333; color: #81c784;")
+
+        self.btn_watch_add = QPushButton("+")
+        self.btn_watch_add.setFixedWidth(28)
+        self.btn_watch_add.setToolTip("Add selected asset to watchlist")
+
+        self.btn_watch_remove = QPushButton("-")
+        self.btn_watch_remove.setFixedWidth(28)
+        self.btn_watch_remove.setToolTip("Remove selected watchlist entry")
+
+        watch_header_layout.addWidget(watch_header)
+        watch_header_layout.addWidget(self.btn_watch_add)
+        watch_header_layout.addWidget(self.btn_watch_remove)
+
+        self.watchlist_table = QTableWidget(0, 2)
+        self.watchlist_table.setHorizontalHeaderLabels(["GUID", "Display Name"])
+        self.watchlist_table.verticalHeader().setVisible(False)
+        self.watchlist_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.watchlist_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.watchlist_table.setColumnWidth(0, 80)
+        watch_header_view = self.watchlist_table.horizontalHeader()
+        watch_header_view.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        watch_header_view.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+
+        watch_layout.addLayout(watch_header_layout)
+        watch_layout.addWidget(self.watchlist_table)
+
         self.top_h_splitter.addWidget(self.table)
         self.top_h_splitter.addWidget(rev_container)
+        self.top_h_splitter.addWidget(watch_container)
+        self.top_h_splitter.setSizes([700, 400, 260])
         self.h_splitter = QSplitter(Qt.Orientation.Horizontal)
 
         self.prop_tree = QTreeWidget()
@@ -975,6 +1033,9 @@ class AnnoModTool(QMainWindow):
 
         self.table.itemClicked.connect(self.load_asset_details)
         self.reverse_search_table.itemClicked.connect(self.load_asset_details)
+        self.watchlist_table.itemClicked.connect(self.load_asset_details)
+        self.btn_watch_add.clicked.connect(self.add_selected_to_watchlist)
+        self.btn_watch_remove.clicked.connect(self.remove_selected_from_watchlist)
         self.btn_export.clicked.connect(self.export_mod)
 
         code_font = QFont("Consolas", 10)
@@ -1153,6 +1214,7 @@ class AnnoModTool(QMainWindow):
         self._template_filter_selected = set()
         self._template_filter_refresh_from_assets(a)
         self.apply_filter()
+        self.refresh_watchlist()
 
         self.statusBar().showMessage(f"Loaded: {len(a)} assets")
 
@@ -1265,6 +1327,7 @@ class AnnoModTool(QMainWindow):
             selected_guid = self.table.item(current_row, 0).text()
 
         self.apply_filter()
+        self.refresh_watchlist()
 
         # Re-select the asset and refresh all detail panes with the new language
         if selected_guid:
@@ -1353,13 +1416,76 @@ class AnnoModTool(QMainWindow):
 
         self.table.setSortingEnabled(True)
 
+    def _display_name_for_guid(self, guid):
+
+        info = self.assets_db.get(guid)
+        if not info:
+            return "Missing asset"
+
+        lang_dict = self.languages_db.get(self.combo_lang.currentText(), {})
+        return lang_dict.get(info['oasis_id']) or lang_dict.get(info.get('visible_tech_name_id')) or info['fallback_name']
+
+    def refresh_watchlist(self):
+
+        self.watchlist_table.setRowCount(0)
+        self.watchlist_table.setSortingEnabled(False)
+
+        for guid in self.watchlist_guids:
+            row = self.watchlist_table.rowCount()
+            self.watchlist_table.insertRow(row)
+
+            guid_item = QTableWidgetItem()
+            if guid.isdigit():
+                guid_item.setData(Qt.ItemDataRole.DisplayRole, int(guid))
+            else:
+                guid_item.setText(guid)
+
+            self.watchlist_table.setItem(row, 0, guid_item)
+            self.watchlist_table.setItem(row, 1, QTableWidgetItem(self._display_name_for_guid(guid)))
+
+        self.watchlist_table.setSortingEnabled(True)
+
+    def add_selected_to_watchlist(self):
+
+        guid = getattr(self, "current_asset_guid", "")
+        if not guid:
+            row = self.table.currentRow()
+            if row >= 0:
+                guid = self.table.item(row, 0).text()
+
+        if not guid or guid in self.watchlist_guids:
+            return
+
+        self.watchlist_guids.append(guid)
+        self._save_watchlist_guids()
+        self.refresh_watchlist()
+        self.statusBar().showMessage(f"Added GUID {guid} to watchlist", 3000)
+
+    def remove_selected_from_watchlist(self):
+
+        row = self.watchlist_table.currentRow()
+        if row < 0:
+            return
+
+        guid = self.watchlist_table.item(row, 0).text()
+        self.watchlist_guids = [saved_guid for saved_guid in self.watchlist_guids if saved_guid != guid]
+        self._save_watchlist_guids()
+        self.refresh_watchlist()
+        self.statusBar().showMessage(f"Removed GUID {guid} from watchlist", 3000)
+
     def load_asset_details(self, item):
 
         self.block_signals = True
 
         table = self.sender() if isinstance(self.sender(), QTableWidget) else self.table
         guid = table.item(item.row(), 0).text()
+        self.current_asset_guid = guid
         
+        if guid not in self.assets_db:
+            self.statusBar().showMessage(f"GUID {guid} is not available in the loaded data", 3000)
+            self.block_signals = False
+            return
+
         asset = self.assets_db[guid]
         self.current_asset_template = asset['template_name']
 

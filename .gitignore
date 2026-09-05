@@ -8,9 +8,14 @@ build/
 dist/
 *.spec
 
+# VSCode and AI
+.codex/
+.vscode/
+
 # Environments
 .venv/
 
 # Personal Config
 config.ini
 auto-exe-to-py.json
+*copy*

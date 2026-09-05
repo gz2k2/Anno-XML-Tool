@@ -1,8 +1,7 @@
 ## Changelog
 
 - **Added**
-  - New tab for templates
-  - Support for multiple XML paths, selectable via a dropdown menu
+  - Watchlist for saving and quickly reopening selected assets
 
-- **Changed**
-  - Buffs/Effects filter can now be edited in Settings
+- **Fixed**
+  - Removed the white corner field next to the GUID headers in the top tables
