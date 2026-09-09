@@ -97,12 +97,22 @@ jobs:
           for file_path in files:
               file_name = os.path.basename(file_path)
               print(f"Lade hoch: {file_name}...")
+              
               file_metadata = {
                   "name": file_name,
                   "parents": [os.environ["FOLDER_ID"]]
               }
+              
               media = MediaFileUpload(file_path, resumable=True)
-              file = service.files().create(body=file_metadata, media_body=media, fields="id").execute()
+              
+              # WICHTIG: supportsAllDrives=True hinzufügen
+              file = service.files().create(
+                  body=file_metadata, 
+                  media_body=media, 
+                  fields="id",
+                  supportsAllDrives=True
+              ).execute()
+              
               print(f"Erfolgreich hochgeladen! File-ID: {file.get('id')}")
           EOF
 
