@@ -81,7 +81,11 @@ jobs:
           from googleapiclient.http import MediaFileUpload
 
           creds_data = json.loads(os.environ["GCP_SA_KEY"])
-          creds = Credentials.from_service_account_info(creds_data, scopes=["https://www.googleapis.com/auth/drive.file"])
+          # Vollzugriff-Scope für Eigentümerwechsel
+          creds = Credentials.from_service_account_info(
+              creds_data, 
+              scopes=["https://www.googleapis.com/auth/drive"]
+          )
           service = build("drive", "v3", credentials=creds)
 
           version = os.environ.get("VERSION", "")
@@ -105,7 +109,7 @@ jobs:
               
               media = MediaFileUpload(file_path, resumable=True)
               
-              # WICHTIG: supportsAllDrives=True hinzufügen
+              # 1. Datei hochladen
               file = service.files().create(
                   body=file_metadata, 
                   media_body=media, 
@@ -113,7 +117,25 @@ jobs:
                   supportsAllDrives=True
               ).execute()
               
-              print(f"Erfolgreich hochgeladen! File-ID: {file.get('id')}")
+              file_id = file.get("id")
+              print(f"Erfolgreich hochgeladen! File-ID: {file_id}")
+
+              # 2. Eigentümerschaft übertragen
+              my_email = os.environ.get("MY_EMAIL")
+              if my_email:
+                  print(f"Übertrage Eigentümerschaft an {my_email}...")
+                  permission = {
+                      "type": "user",
+                      "role": "owner",
+                      "emailAddress": my_email
+                  }
+                  service.permissions().create(
+                      fileId=file_id,
+                      body=permission,
+                      transferOwnership=True,
+                      supportsAllDrives=True
+                  ).execute()
+                  print("Eigentümerschaft erfolgreich übertragen!")
           EOF
 
       - name: Upload to Google Drive
@@ -122,5 +144,6 @@ jobs:
           GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
           FOLDER_ID: "10XrGH5rX77B2yzeypwuCCxvQedYd2iif"
           VERSION: "${{ steps.get_version.outputs.VERSION }}"
+          MY_EMAIL: "${{ secrets.EMAIL_SECRET }}"
         run: |
           python upload_gdrive.py
