@@ -70,7 +70,7 @@ jobs:
 #        env:
 #          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # --- Dropbox Upload ---
+# --- Dropbox Upload ---
       - name: Upload to Dropbox
         shell: bash
         env:
@@ -89,10 +89,11 @@ jobs:
           if not files:
               raise FileNotFoundError(f'Keine Datei gefunden für {pattern}')
 
+          folder_name = 'Anno_XML_Viewer'  # Hier den Unterordner anpassen
+
           for file_path in files:
               file_name = os.path.basename(file_path)
               with open(file_path, 'rb') as f:
-                  # Lädt die Datei direkt in das Dropbox-Stammverzeichnis (bzw. den App-Ordner)
-                  dbx.files_upload(f.read(), f'/{file_name}', mode=dropbox.files.WriteMode.overwrite)
-              print(f'{file_name} erfolgreich zu Dropbox hochgeladen!')
+                  dbx.files_upload(f.read(), f'/{folder_name}/{file_name}', mode=dropbox.files.WriteMode.overwrite)
+              print(f'{file_name} erfolgreich in den Ordner {folder_name} hochgeladen!')
           "
