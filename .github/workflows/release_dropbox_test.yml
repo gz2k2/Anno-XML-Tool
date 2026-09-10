@@ -1,12 +1,12 @@
-name: Build and Release (Dropbox Upload)
+name: Build and Release (Dropbox Upload test)
 
 on:
   push:
     branches:
       - main
     tags:
-      - 'v*'
-  workflow_dispatch:
+      - 'v*' # Trigger bei Tags wie v1.0, v0.1.0-beta, etc.
+  workflow_dispatch: # Ermöglicht das manuelle Starten über die GitHub-Webseite
 
 permissions:
   contents: write
@@ -14,12 +14,8 @@ permissions:
 jobs:
   build-windows:
     runs-on: windows-latest
-
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      github.ref_type == 'tag' ||
-      startsWith(github.event.head_commit.message, 'v')
-
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'v')
+    
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -30,65 +26,33 @@ jobs:
           python-version: '3.13'
 
       - name: Install Dependencies
-        shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          pip install PyQt6 pyinstaller google-api-python-client google-auth dropbox
+          pip install PyQt6 pyinstaller google-api-python-client google-auth
 
       - name: Read Version and Changelog
         id: get_version
         shell: pwsh
         run: |
-          $version = (Get-Content version.txt -Raw).Trim()
-
-          if ([string]::IsteSpace($version)) {
-              throw "version.txt enthält keine gültige Versionsnummer."
-          }
-
-          "VERSION=$version" >> $env:GITHUB_OUTPUT
-
-          if (Test-Path "changelog.md") {
-              $changelog = Get-Content changelog.md -Raw
-          }
-          else {
-              $changelog = "Kein Changelog vorhanden."
-          }
-
-          "CHANGELOG<<EOF" >> $env:GITHUB_OUTPUT
-          $changelog >> $env:GITHUB_OUTPUT
-          "EOF" >> $env:GITHUB_OUTPUT
-
-          Write-Host "Version: $version"
+          $v = Get-Content version.txt -Raw
+          echo "VERSION=$($v.Trim())" >> $env:GITHUB_OUTPUT
+          
+          # Read changelog and handle multiline output for GitHub Actions
+          $changelog = Get-Content changelog.md -Raw
+          echo "CHANGELOG<<EOF" >> $env:GITHUB_OUTPUT
+          echo $changelog >> $env:GITHUB_OUTPUT
+          echo "EOF" >> $env:GITHUB_OUTPUT
 
       - name: Build EXE with PyInstaller
-        shell: pwsh
         run: |
-          $version = "${{ steps.get_version.outputs.VERSION }}"
-
-          pyinstaller `
-            --onefile `
-            --windowed `
-            --icon "data/ui/AnnoXMLTool.ico" `
-            --name "Anno_XML_Viewer_v$version" `
-            --add-data "data/ui/kofi5.webp;data/ui" `
-            --add-data "version.txt;." `
-            --add-data "data/ui/AnnoXMLTool.ico;data/ui" `
-            Anno_XML_Viewer.py
-
-          $exe = "dist\Anno_XML_Viewer_v$version.exe"
-
-          if (-not (Test-Path $exe)) {
-              throw "Build fehlgeschlagen. Datei nicht gefunden: $exe"
-          }
-
-          Write-Host "EXE erfolgreich erstellt: $exe"
+          pyinstaller --onefile --windowed --icon "data/ui/AnnoXMLTool.ico" --name "Anno_XML_Viewer_v${{ steps.get_version.outputs.VERSION }}" --add-data "data/ui/kofi5.webp;data/ui" --add-data "version.txt;." --add-data "data/ui/AnnoXMLTool.ico;data/ui" Anno_XML_Viewer.py
 
 #      - name: Create Release
 #        id: create_release
 #        uses: softprops/action-gh-release@v2
 #        with:
 #          files: dist/Anno_XML_Viewer_v${{ steps.get_version.outputs.VERSION }}.exe
-#          name: v${{ steps.get_version.outputs.VERSION }}
+#          name: ${{ github.ref_type == 'tag' && format('v{0}', steps.get_version.outputs.VERSION) || format('v{0}', steps.get_version.outputs.VERSION) }}
 #          tag_name: v${{ steps.get_version.outputs.VERSION }}
 #          draft: false
 #          prerelease: ${{ github.ref_type != 'tag' }}
@@ -100,7 +64,7 @@ jobs:
 #
 #            ### Changes
 #            See the automatic release notes below or the commit history.
-#
+#            
 #            ### Download
 #            You can find the executable file in the Assets section below.
 #        env:
@@ -151,10 +115,10 @@ jobs:
 
           python upload_to_dropbox.py
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Anno_XML_Viewer_v${{ steps.get_version.outputs.VERSION }}
-          path: dist/Anno_XML_Viewer_v${{ steps.get_version.outputs.VERSION }}.exe
-          if-no-files-found: error
-          retention-days: 30
+#      - name: Upload Artifact
+#        uses: actions/upload-artifact@v4
+#        with:
+#          name: Anno_XML_Viewer_v${{ steps.get_version.outputs.VERSION }}
+#          path: dist/Anno_XML_Viewer_v${{ steps.get_version.outputs.VERSION }}.exe
+#          if-no-files-found: error
+#          retention-days: 30
