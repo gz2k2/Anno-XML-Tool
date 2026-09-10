@@ -75,50 +75,37 @@ jobs:
         env:
           DROPBOX_TOKEN: ${{ secrets.DROPBOX_TOKEN }}
           VERSION: ${{ steps.get_version.outputs.VERSION }}
-          DROPBOX_FOLDER: /Anno_XML_Viewer
         run: |
-          @'
-          import os
-          from pathlib import Path
+          $file = "dist\Anno_XML_Viewer_v$env:VERSION.exe"
 
-          import dropbox
-          from dropbox.files import WriteMode
+          if (-not (Test-Path $file)) {
+              throw "Datei nicht gefunden: $file"
+          }
 
-          token = os.environ["DROPBOX_TOKEN"]
-          version = os.environ["VERSION"]
-          folder = os.environ["DROPBOX_FOLDER"]
+          $dropboxPath = "/Anno_XML_Viewer/Anno_XML_Viewer_v$env:VERSION.exe"
 
-          filename = f"Anno_XML_Viewer_v{version}.exe"
-          local_file = Path("dist") / filename
+          Write-Host "Upload von:"
+          Write-Host $file
+          Write-Host ""
+          Write-Host "nach Dropbox:"
+          Write-Host $dropboxPath
 
-          if not local_file.exists():
-              raise FileNotFoundError(
-                  f"Datei nicht gefunden: {local_file}"
-              )
+          $arg = @{
+              path = $dropboxPath
+              mode = "overwrite"
+              autorename = $false
+              mute = $false
+          } | ConvertTo-Json -Compress
 
-          dbx = dropbox.Dropbox(token)
+          curl.exe `
+            -X POST "https://content.dropboxapi.com/2/files/upload" `
+            --header "Authorization: Bearer $env:DROPBOX_TOKEN" `
+            --header "Dropbox-API-Arg: $arg" `
+            --header "Content-Type: application/octet-stream" `
+            --data-binary "@$file"
 
-          remote_file = f"{folder}/{filename}"
+          if ($LASTEXITCODE -ne 0) {
+              throw "Dropbox Upload fehlgeschlagen."
+          }
 
-          print(f"Upload: {local_file}")
-          print(f"Nach Dropbox: {remote_file}")
-
-          with open(local_file, "rb") as f:
-              dbx.files_upload(
-                  f.read(),
-                  remote_file,
-                  mode=WriteMode.overwrite
-              )
-
-          print("Upload erfolgreich abgeschlossen.")
-          '@ | Set-Content upload_to_dropbox.py
-
-          python upload_to_dropbox.py
-
-#      - name: Upload Artifact
-#        uses: actions/upload-artifact@v4
-#        with:
-#          name: Anno_XML_Viewer_v${{ steps.get_version.outputs.VERSION }}
-#          path: dist/Anno_XML_Viewer_v${{ steps.get_version.outputs.VERSION }}.exe
-#          if-no-files-found: error
-#          retention-days: 30
+          Write-Host "Upload erfolgreich abgeschlossen."
