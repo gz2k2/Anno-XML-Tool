@@ -1,4 +1,4 @@
-name: Build and Release (Dropbox Upload test)
+name: Build and Release (Dropbox Upload test2)
 
 on:
   push:
@@ -122,138 +122,55 @@ jobs:
           DROPBOX_APP_SECRET: ${{ secrets.DROPBOX_APP_SECRET }}
           DROPBOX_REFRESH_TOKEN: ${{ secrets.DROPBOX_REFRESH_TOKEN }}
           VERSION: ${{ steps.get_version.outputs.VERSION }}
-          DROPBOX_FOLDER: /Anno_XML_Viewer_test
         run: |
-          $ErrorActionPreference = "Stop"
+          $file = "dist\Anno_XML_Viewer_v$env:VERSION.exe"
 
-          if (-not $env:DROPBOX_APP_KEY) {
-              throw "GitHub Secret DROPBOX_APP_KEY fehlt."
+          if (-not (Test-Path $file)) {
+              throw "Datei nicht gefunden: $file"
           }
 
-          if (-not $env:DROPBOX_APP_SECRET) {
-              throw "GitHub Secret DROPBOX_APP_SECRET fehlt."
+          # 1. Frischen Access Token über den Refresh Token anfordern
+          $tokenResponse = Invoke-RestMethod -Uri "https://api.dropboxapi.com/oauth2/token" `
+              -Method Post `
+              -ContentType "application/x-www-form-urlencoded" `
+              -Body @{
+                  grant_type    = "refresh_token"
+                  refresh_token = $env:DROPBOX_REFRESH_TOKEN
+                  client_id     = $env:DROPBOX_APP_KEY
+                  client_secret = $env:DROPBOX_APP_SECRET
+              }
+
+          $accessToken = $tokenResponse.access_token
+
+          if ([string]::IsNullOrWhiteSpace($accessToken)) {
+              throw "Konnte keinen Access Token von Dropbox beziehen."
           }
 
-          if (-not $env:DROPBOX_REFRESH_TOKEN) {
-              throw "GitHub Secret DROPBOX_REFRESH_TOKEN fehlt."
+          # 2. Upload durchführen
+          $dropboxPath = "/Anno_XML_Viewer/Anno_XML_Viewer_v$env:VERSION.exe"
+
+          Write-Host "Upload von:"
+          Write-Host $file
+          Write-Host ""
+          Write-Host "nach Dropbox:"
+          Write-Host $dropboxPath
+
+          $arg = @{
+              path       = $dropboxPath
+              mode       = "overwrite"
+              autorename = $false
+              mute       = $false
+          } | ConvertTo-Json -Compress
+
+          curl.exe `
+            -X POST "https://content.dropboxapi.com/2/files/upload" `
+            --header "Authorization: Bearer $accessToken" `
+            --header "Dropbox-API-Arg: $arg" `
+            --header "Content-Type: application/octet-stream" `
+            --data-binary "@$file"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Dropbox Upload fehlgeschlagen."
           }
 
-          if (-not $env:VERSION) {
-              throw "Die Versionsnummer fehlt."
-          }
-
-          $fileName = "Anno_XML_Viewer_v$env:VERSION.exe"
-          $localFile = "dist\$fileName"
-
-          if (-not (Test-Path $localFile)) {
-              throw "Die Datei wurde nicht gefunden: $localFile"
-          }
-
-          $dropboxFolder = $env:DROPBOX_FOLDER.Trim()
-
-          if (-not $dropboxFolder.StartsWith("/")) {
-              $dropboxFolder = "/$dropboxFolder"
-          }
-
-          $dropboxFolder = $dropboxFolder.TrimEnd("/")
-          $dropboxPath = "$dropboxFolder/$fileName"
-
-          Write-Host "Lokale Datei: $localFile"
-          Write-Host "Dropbox-Ziel: $dropboxPath"
-
-          $tokenResponseFile = Join-Path `
-              $env:RUNNER_TEMP `
-              "dropbox-token-response.json"
-
-          $uploadResponseFile = Join-Path `
-              $env:RUNNER_TEMP `
-              "dropbox-upload-response.json"
-
-          try {
-              Write-Host "Fordere Dropbox Access Token an ..."
-
-              $tokenHttpCode = curl.exe `
-                  --silent `
-                  --show-error `
-                  --output "$tokenResponseFile" `
-                  --write-out "%{http_code}" `
-                  --request POST `
-                  --user "$($env:DROPBOX_APP_KEY):$($env:DROPBOX_APP_SECRET)" `
-                  --header "Content-Type: application/x-www-form-urlencoded" `
-                  --data-urlencode "grant_type=refresh_token" `
-                  --data-urlencode "refresh_token=$env:DROPBOX_REFRESH_TOKEN" `
-                  "https://api.dropboxapi.com/oauth2/token"
-
-              if ($LASTEXITCODE -ne 0) {
-                  throw "curl konnte keinen Access Token anfordern. Exitcode: $LASTEXITCODE"
-              }
-
-              if ($tokenHttpCode -ne "200") {
-                  $tokenError = Get-Content $tokenResponseFile -Raw
-                  throw "Dropbox Token-Anfrage fehlgeschlagen. HTTP-Code: $tokenHttpCode. Antwort: $tokenError"
-              }
-
-              $tokenResponse = Get-Content $tokenResponseFile -Raw |
-                  ConvertFrom-Json
-
-              $accessToken = $tokenResponse.access_token
-
-              if (-not $accessToken) {
-                  throw "Dropbox hat keinen Access Token zurückgegeben."
-              }
-
-              Write-Host "Access Token wurde erfolgreich erstellt."
-
-              $dropboxArgumentObject = @{
-                  path            = $dropboxPath
-                  mode            = "overwrite"
-                  autorename      = $false
-                  mute            = $false
-                  strict_conflict = $false
-              }
-
-              $dropboxApiArgument = $dropboxArgumentObject |
-                  ConvertTo-Json -Compress
-
-              Write-Host "Starte Dropbox-Upload ..."
-
-              $uploadHttpCode = curl.exe `
-                  --silent `
-                  --show-error `
-                  --output "$uploadResponseFile" `
-                  --write-out "%{http_code}" `
-                  --request POST `
-                  --header "Authorization: Bearer $accessToken" `
-                  --header "Dropbox-API-Arg: $dropboxApiArgument" `
-                  --header "Content-Type: application/octet-stream" `
-                  --data-binary "@$localFile" `
-                  "https://content.dropboxapi.com/2/files/upload"
-
-              if ($LASTEXITCODE -ne 0) {
-                  throw "curl konnte die Datei nicht hochladen. Exitcode: $LASTEXITCODE"
-              }
-
-              if ($uploadHttpCode -ne "200") {
-                  $uploadError = Get-Content $uploadResponseFile -Raw
-                  throw "Dropbox-Upload fehlgeschlagen. HTTP-Code: $uploadHttpCode. Antwort: $uploadError"
-              }
-
-              $uploadResponse = Get-Content $uploadResponseFile -Raw |
-                  ConvertFrom-Json
-
-              Write-Host "Dropbox-Upload erfolgreich."
-              Write-Host "Dropbox-Pfad: $($uploadResponse.path_display)"
-              Write-Host "Dropbox-ID: $($uploadResponse.id)"
-              Write-Host "Revision: $($uploadResponse.rev)"
-          }
-          finally {
-              if (Test-Path $tokenResponseFile) {
-                  Remove-Item $tokenResponseFile -Force
-              }
-
-              if (Test-Path $uploadResponseFile) {
-                  Remove-Item $uploadResponseFile -Force
-              }
-
-              $accessToken = $null
-          }
+          Write-Host "Upload erfolgreich abgeschlossen."
