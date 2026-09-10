@@ -5,7 +5,7 @@ on:
     branches:
       - main
     tags:
-      - 'v*' # Trigger bei Tags wie v1.0, v0.1.0-beta, etc.
+      - 'xxxxxxxx*' # Trigger bei Tags wie v1.0, v0.1.0-beta, etc.
   workflow_dispatch: # Ermöglicht das manuelle Starten über die GitHub-Webseite
 
 permissions:

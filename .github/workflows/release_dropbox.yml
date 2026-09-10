@@ -5,8 +5,8 @@ on:
     branches:
       - main
     tags:
-      - 'v*' # Trigger bei Tags wie v1.0, v0.1.0-beta, etc.
-  workflow_dispatch: # Ermöglicht das manuelle Starten über die GitHub-Webseite
+      - 'db*'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -14,8 +14,12 @@ permissions:
 jobs:
   build-windows:
     runs-on: windows-latest
-    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'v')
-    
+
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.ref_type == 'tag' ||
+      startsWith(github.event.head_commit.message, 'v')
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -26,74 +30,147 @@ jobs:
           python-version: '3.13'
 
       - name: Install Dependencies
+        shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          pip install PyQt6 pyinstaller google-api-python-client google-auth
+          python -m pip install PyQt6 pyinstaller google-api-python-client google-auth
 
       - name: Read Version and Changelog
         id: get_version
         shell: pwsh
         run: |
-          $v = Get-Content version.txt -Raw
-          echo "VERSION=$($v.Trim())" >> $env:GITHUB_OUTPUT
-          
-          # Read changelog and handle multiline output for GitHub Actions
-          $changelog = Get-Content changelog.md -Raw
-          echo "CHANGELOG<<EOF" >> $env:GITHUB_OUTPUT
-          echo $changelog >> $env:GITHUB_OUTPUT
-          echo "EOF" >> $env:GITHUB_OUTPUT
+          $ErrorActionPreference = "Stop"
+
+          if (-not (Test-Path "version.txt")) {
+              throw "Die Datei version.txt wurde nicht gefunden."
+          }
+
+          $version = (Get-Content "version.txt" -Raw).Trim()
+
+          if (-not $version) {
+              throw "Die Datei version.txt enthält keine Versionsnummer."
+          }
+
+          "VERSION=$version" | Out-File `
+              -FilePath $env:GITHUB_OUTPUT `
+              -Encoding utf8 `
+              -Append
+
+          if (Test-Path "changelog.md") {
+              $changelog = Get-Content "changelog.md" -Raw
+          }
+          else {
+              $changelog = "Kein Changelog vorhanden."
+          }
+
+          "CHANGELOG<<CHANGELOG_END" | Out-File `
+              -FilePath $env:GITHUB_OUTPUT `
+              -Encoding utf8 `
+              -Append
+
+          $changelog | Out-File `
+              -FilePath $env:GITHUB_OUTPUT `
+              -Encoding utf8 `
+              -Append
+
+          "CHANGELOG_END" | Out-File `
+              -FilePath $env:GITHUB_OUTPUT `
+              -Encoding utf8 `
+              -Append
+
+          Write-Host "Ermittelte Version: $version"
 
       - name: Build EXE with PyInstaller
+        shell: pwsh
         run: |
-          pyinstaller --onefile --windowed --icon "data/ui/AnnoXMLTool.ico" --name "Anno_XML_Viewer_v${{ steps.get_version.outputs.VERSION }}" --add-data "data/ui/kofi5.webp;data/ui" --add-data "version.txt;." --add-data "data/ui/AnnoXMLTool.ico;data/ui" Anno_XML_Viewer.py
+          $ErrorActionPreference = "Stop"
 
-#      - name: Create Release
-#        id: create_release
-#        uses: softprops/action-gh-release@v2
-#        with:
-#          files: dist/Anno_XML_Viewer_v${{ steps.get_version.outputs.VERSION }}.exe
-#          name: ${{ github.ref_type == 'tag' && format('v{0}', steps.get_version.outputs.VERSION) || format('v{0}', steps.get_version.outputs.VERSION) }}
-#          tag_name: v${{ steps.get_version.outputs.VERSION }}
-#          draft: false
-#          prerelease: ${{ github.ref_type != 'tag' }}
-#          generate_release_notes: true
-#          body: |
-#            Automatic build of version ${{ steps.get_version.outputs.VERSION }}.
-#
-#            ${{ steps.get_version.outputs.CHANGELOG }}
-#
-#            ### Changes
-#            See the automatic release notes below or the commit history.
-#            
-#            ### Download
-#            You can find the executable file in the Assets section below.
-#        env:
-#          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          $version = "${{ steps.get_version.outputs.VERSION }}"
+          $exeName = "Anno_XML_Viewer_v$version"
+          $exePath = "dist\$exeName.exe"
 
-# --- Dropbox Upload ---
+          python -m PyInstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --windowed `
+            --icon "data/ui/AnnoXMLTool.ico" `
+            --name "$exeName" `
+            --add-data "data/ui/kofi5.webp;data/ui" `
+            --add-data "version.txt;." `
+            --add-data "data/ui/AnnoXMLTool.ico;data/ui" `
+            "Anno_XML_Viewer.py"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "PyInstaller ist fehlgeschlagen. Exitcode: $LASTEXITCODE"
+          }
+
+          if (-not (Test-Path $exePath)) {
+              throw "Die erwartete EXE wurde nicht erstellt: $exePath"
+          }
+
+          $exeFile = Get-Item $exePath
+
+          Write-Host "Build erfolgreich."
+          Write-Host "Datei: $($exeFile.FullName)"
+          Write-Host "Größe in Byte: $($exeFile.Length)"
+
       - name: Upload to Dropbox
-        shell: bash
+        shell: pwsh
         env:
-          DROPBOX_TOKEN: ${{ secrets.DROPBOX_TOKEN }}
-          VERSION: "${{ steps.get_version.outputs.VERSION }}"
+          DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY }}
+          DROPBOX_APP_SECRET: ${{ secrets.DROPBOX_APP_SECRET }}
+          DROPBOX_REFRESH_TOKEN: ${{ secrets.DROPBOX_REFRESH_TOKEN }}
+          VERSION: ${{ steps.get_version.outputs.VERSION }}
         run: |
-          pip install dropbox
-          python -c "
-          import os, glob, dropbox
+          $file = "dist\Anno_XML_Viewer_v$env:VERSION.exe"
 
-          dbx = dropbox.Dropbox(os.environ['DROPBOX_TOKEN'])
-          version = os.environ.get('VERSION', '')
-          pattern = f'dist/Anno_XML_Viewer_v{version}.exe'
-          files = glob.glob(pattern)
+          if (-not (Test-Path $file)) {
+              throw "Datei nicht gefunden: $file"
+          }
 
-          if not files:
-              raise FileNotFoundError(f'Keine Datei gefunden für {pattern}')
+          # 1. Frischen Access Token über den Refresh Token anfordern
+          $tokenResponse = Invoke-RestMethod -Uri "https://api.dropboxapi.com/oauth2/token" `
+              -Method Post `
+              -ContentType "application/x-www-form-urlencoded" `
+              -Body @{
+                  grant_type    = "refresh_token"
+                  refresh_token = $env:DROPBOX_REFRESH_TOKEN
+                  client_id     = $env:DROPBOX_APP_KEY
+                  client_secret = $env:DROPBOX_APP_SECRET
+              }
 
-          folder_name = 'Anno_XML_Viewer'  # Hier den Unterordner anpassen
+          $accessToken = $tokenResponse.access_token
 
-          for file_path in files:
-              file_name = os.path.basename(file_path)
-              with open(file_path, 'rb') as f:
-                  dbx.files_upload(f.read(), f'/{folder_name}/{file_name}', mode=dropbox.files.WriteMode.overwrite)
-              print(f'{file_name} erfolgreich in den Ordner {folder_name} hochgeladen!')
-          "
+          if ([string]::IsNullOrWhiteSpace($accessToken)) {
+              throw "Konnte keinen Access Token von Dropbox beziehen."
+          }
+
+          # 2. Upload durchführen
+          $dropboxPath = "/Anno_XML_Viewer/Anno_XML_Viewer_v$env:VERSION.exe"
+
+          Write-Host "Upload von:"
+          Write-Host $file
+          Write-Host ""
+          Write-Host "nach Dropbox:"
+          Write-Host $dropboxPath
+
+          $arg = @{
+              path       = $dropboxPath
+              mode       = "overwrite"
+              autorename = $false
+              mute       = $false
+          } | ConvertTo-Json -Compress
+
+          curl.exe `
+            -X POST "https://content.dropboxapi.com/2/files/upload" `
+            --header "Authorization: Bearer $accessToken" `
+            --header "Dropbox-API-Arg: $arg" `
+            --header "Content-Type: application/octet-stream" `
+            --data-binary "@$file"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Dropbox Upload fehlgeschlagen."
+          }
+
+          Write-Host "Upload erfolgreich abgeschlossen."
