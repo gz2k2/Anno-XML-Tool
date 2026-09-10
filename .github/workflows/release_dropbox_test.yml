@@ -50,138 +50,39 @@ jobs:
       - name: Upload to Dropbox
         shell: pwsh
         env:
-          DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY }}
-          DROPBOX_APP_SECRET: ${{ secrets.DROPBOX_APP_SECRET }}
-          DROPBOX_REFRESH_TOKEN: ${{ secrets.DROPBOX_REFRESH_TOKEN }}
+          DROPBOX_TOKEN: ${{ secrets.DROPBOX_TOKEN }}
           VERSION: ${{ steps.get_version.outputs.VERSION }}
-          DROPBOX_FOLDER: /Anno_XML_Viewer_test
         run: |
-          $ErrorActionPreference = "Stop"
+          $file = "dist\Anno_XML_Viewer_v$env:VERSION.exe"
 
-          # Secrets prüfen
-          if (:IsNullOrWhiteSpace($env:DROPBOX_APP_KEY)) {
-              throw "GitHub Secret DROPBOX_APP_KEY ist nicht gesetzt oder leer."
+          if (-not (Test-Path $file)) {
+              throw "Datei nicht gefunden: $file"
           }
 
-          if (:IsNullOrWhiteSpace($env:DROPBOX_APP_SECRET)) {
-              throw "GitHub Secret DROPBOX_APP_SECRET ist nicht gesetzt oder leer."
-          }
+          $dropboxPath = "/Anno_XML_Viewer/Anno_XML_Viewer_v$env:VERSION.exe"
 
-          if (:IsNullOrWhiteSpace($env:DROPBOX_REFRESH_TOKEN)) {
-              throw "GitHub Secret DROPBOX_REFRESH_TOKEN ist nicht gesetzt oder leer."
-          }
+          Write-Host "Upload von:"
+          Write-Host $file
+          Write-Host ""
+          Write-Host "nach Dropbox:"
+          Write-Host $dropboxPath
 
-          if (:IsNullOrWhiteSpace($env:VERSION)) {
-              throw "Die Umgebungsvariable VERSION ist nicht gesetzt oder leer."
-          }
-
-          # Lokale Datei festlegen und prüfen
-          $fileName = "Anno_XML_Viewer_v$env:VERSION.exe"
-          $localFile = "dist\$fileName"
-
-          if (-not (Test-Path -LiteralPath $localFile -PathType Leaf)) {
-              throw "Die hochzuladende Datei wurde nicht gefunden: $localFile"
-          }
-
-          # Dropbox-Zielpfad aufbauen
-          $dropboxFolder = $env:DROPBOX_FOLDER.Trim()
-
-          if (-not $dropboxFolder.StartsWith("/")) {
-              $dropboxFolder = "/$dropboxFolder"
-          }
-
-          $dropboxFolder = $dropboxFolder.TrimEnd("/")
-          $dropboxPath = "$dropboxFolder/$fileName"
-
-          $fileInfo = Get-Item -LiteralPath $localFile
-
-          Write-Host "Lokale Datei: $($fileInfo.FullName)"
-          Write-Host "Dateigröße: $(:Round($fileInfo.Length / 1MB, 2)) MB"
-          Write-Host "Dropbox-Ziel: $dropboxPath"
-
-          # Kurzlebigen Access Token mit dem Refresh Token anfordern
-          Write-Host "Fordere neuen Dropbox Access Token an ..."
-
-          $tokenResponseFile = Join-Path $env:RUNNER_TEMP "dropbox-token-response.json"
-
-          $tokenHttpCode = curl.exe `
-            --silent `
-            --show-error `
-            --output "$tokenResponseFile" `
-            --write-out "%{http_code}" `
-            --request POST `
-            --user "${env:DROPBOX_APP_KEY}:${env:DROPBOX_APP_SECRET}" `
-            --header "Content-Type: application/x-www-form-urlencoded" `
-            --data-urlencode "grant_type=refresh_token" `
-            --data-urlencode "refresh_token=$env:DROPBOX_REFRESH_TOKEN" `
-            "https://api.dropboxapi.com/oauth2/token"
-
-          if ($LASTEXITCODE -ne 0) {
-              throw "Die Anfrage für den Dropbox Access Token ist technisch fehlgeschlagen."
-          }
-
-          if ($tokenHttpCode -lt 200 -or $tokenHttpCode -ge 300) {
-              $tokenError = Get-Content -LiteralPath $tokenResponseFile -Raw
-              throw "Dropbox Token-Anfrage fehlgeschlagen. HTTP $tokenHttpCode. Antwort: $tokenError"
-          }
-
-          $tokenResponse = Get-Content -LiteralPath $tokenResponseFile -Raw |
-              ConvertFrom-Json
-
-          $accessToken = $tokenResponse.access_token
-
-          if (:IsNullOrWhiteSpace($accessToken)) {
-              throw "Dropbox hat keinen Access Token zurückgegeben."
-          }
-
-          Write-Host "Kurzlebiger Dropbox Access Token wurde erfolgreich erstellt."
-
-          # Dropbox-API-Argument sicher als kompaktes JSON erzeugen
-          $dropboxApiArgument = @{
-              path       = $dropboxPath
-              mode       = "overwrite"
+          $arg = @{
+              path = $dropboxPath
+              mode = "overwrite"
               autorename = $false
-              mute       = $false
-              strict_conflict = $false
+              mute = $false
           } | ConvertTo-Json -Compress
 
-          # Datei hochladen
-          Write-Host "Starte Dropbox-Upload ..."
-
-          $uploadResponseFile = Join-Path $env:RUNNER_TEMP "dropbox-upload-response.json"
-
-          $uploadHttpCode = curl.exe `
-            --silent `
-            --show-error `
-            --output "$uploadResponseFile" `
-            --write-out "%{http_code}" `
-            --request POST `
-            "https://content.dropboxapi.com/2/files/upload" `
-            --header "Authorization: Bearer $accessToken" `
-            --header "Dropbox-API-Arg: $dropboxApiArgument" `
+          curl.exe `
+            -X POST "https://content.dropboxapi.com/2/files/upload" `
+            --header "Authorization: Bearer $env:DROPBOX_TOKEN" `
+            --header "Dropbox-API-Arg: $arg" `
             --header "Content-Type: application/octet-stream" `
-            --data-binary "@$localFile"
+            --data-binary "@$file"
 
           if ($LASTEXITCODE -ne 0) {
-              throw "Der Dropbox-Upload ist technisch fehlgeschlagen."
+              throw "Dropbox Upload fehlgeschlagen."
           }
 
-          if ($uploadHttpCode -lt 200 -or $uploadHttpCode -ge 300) {
-              $uploadError = Get-Content -LiteralPath $uploadResponseFile -Raw
-              throw "Dropbox-Upload fehlgeschlagen. HTTP $uploadHttpCode. Antwort: $uploadError"
-          }
-
-          $uploadResponse = Get-Content -LiteralPath $uploadResponseFile -Raw |
-              ConvertFrom-Json
-
-          Write-Host "Dropbox-Upload erfolgreich abgeschlossen."
-          Write-Host "Dropbox-Pfad: $($uploadResponse.path_display)"
-          Write-Host "Dropbox-ID: $($uploadResponse.id)"
-          Write-Host "Dropbox-Revision: $($uploadResponse.rev)"
-
-          # Temporäre Dateien entfernen
-          Remove-Item -LiteralPath $tokenResponseFile -Force -ErrorAction SilentlyContinue
-          Remove-Item -LiteralPath $uploadResponseFile -Force -ErrorAction SilentlyContinue
-
-          # Access Token aus der PowerShell-Variablen entfernen
-          $accessToken = $null
+          Write-Host "Upload erfolgreich abgeschlossen."
