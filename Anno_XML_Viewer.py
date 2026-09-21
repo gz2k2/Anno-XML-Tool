@@ -2,8 +2,10 @@ import sys
 import os
 import glob
 import re
+import multiprocessing
+from queue import Empty
 from rda_extractor import (NET_CONSOLE_EXIT_CODE, extract_gamefiles as run_rda_extract,
-                           extract_anno1800_gamefiles, subprocess_timeout_error)
+                           extract_anno1800_gamefiles)
 from datetime import datetime
 import xml.etree.ElementTree as ET
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
@@ -12,8 +14,8 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QSplitter, QMessageBox, QTreeWidget, QTreeWidgetItem, 
                              QMenu, QDialog, QListWidget, QListWidgetItem, 
                              QDialogButtonBox, QComboBox, QTabWidget, QGroupBox,
-                             QCheckBox)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSettings, QUrl
+                             QCheckBox, QProgressDialog)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSettings, QUrl, QTimer
 from PyQt6.QtGui import QSyntaxHighlighter, QTextCharFormat, QColor, QFont, QAction, QPixmap, QIcon
 from PyQt6.QtGui import QDesktopServices
 
@@ -67,6 +69,27 @@ def indent(elem, level=0):
     else:
         if level and (not elem.tail or not elem.tail.strip()):
             elem.tail = i
+
+
+def rda_extraction_worker(result_queue, app_dir, game_name, game_folder, output_folder):
+    """Run archive extraction outside the UI process and report its state."""
+    try:
+        if game_name == "Anno 1800":
+            def report(message, current, total):
+                result_queue.put(("progress", message, current, total))
+
+            args, returncode, output = extract_anno1800_gamefiles(
+                app_dir, game_folder, output_folder, progress_callback=report
+            )
+        else:
+            archive = os.path.join(game_folder, "maindata", "config.rda")
+            if not os.path.isfile(archive):
+                raise FileNotFoundError(archive)
+            result_queue.put(("progress", "Extracting config.rda...", 0, 0))
+            args, returncode, output = run_rda_extract(app_dir, archive, output_folder)
+        result_queue.put(("finished", args, returncode, output))
+    except Exception as exc:
+        result_queue.put(("error", type(exc).__name__, str(exc)))
 
 
 
@@ -1176,62 +1199,93 @@ class AnnoModTool(QMainWindow):
 
     def extract_gamefiles(self, game_name, folder_edit):
         game_folder = folder_edit.text().strip()
-        archive = os.path.join(game_folder, "maindata", "config.rda")
-        if game_name == "Anno 1800":
-            archive_exists = any(
-                name.lower().startswith("data") and name.lower().endswith(".rda")
-                for root, _dirs, files in os.walk(game_folder)
-                for name in files
-            )
-        else:
-            archive_exists = os.path.isfile(archive)
-        if not archive_exists:
-            expected = "data*.rda" if game_name == "Anno 1800" else "maindata/config.rda"
-            QMessageBox.warning(self, "Extract gamefiles", f"{expected} not found for {game_name}:\n{game_folder}")
+        if not os.path.isdir(game_folder):
+            QMessageBox.warning(self, "Extract gamefiles", f"Game folder not found:\n{game_folder}")
             return
         output_folder = QFileDialog.getExistingDirectory(self, f"Select output folder for {game_name}")
         if not output_folder:
             return
+        app_dir = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
+        rda_path = os.path.join(app_dir, "RdaConsole.exe")
+        if not os.path.isfile(rda_path):
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle("RdaConsole.exe not found")
+            box.setTextFormat(Qt.TextFormat.RichText)
+            box.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+            box.setText(
+                "RdaConsole.exe was not found.<br><br>"
+                "Please download RdaConsole here:<br>"
+                "<a href='https://github.com/anno-mods/RdaConsole/releases'>"
+                "RdaConsole GitHub</a><br><br>"
+                f"Then place RdaConsole.exe in the application directory:<br>{app_dir}"
+            )
+            box.exec()
+            return
+
+        self._rda_queue = multiprocessing.Queue()
+        self._rda_process = multiprocessing.Process(
+            target=rda_extraction_worker,
+            args=(self._rda_queue, app_dir, game_name, game_folder, output_folder),
+        )
+        self._rda_process.start()
+        self._rda_game_name = game_name
+        self._rda_progress = QProgressDialog("Starting extraction...", None, 0, 0, self)
+        self._rda_progress.setWindowTitle("Extract gamefiles")
+        self._rda_progress.setWindowModality(Qt.WindowModality.WindowModal)
+        self._rda_progress.setAutoClose(False)
+        self._rda_progress.setMinimumDuration(0)
+        self._rda_progress.show()
+        self._rda_timer = QTimer(self)
+        self._rda_timer.timeout.connect(self._check_rda_extraction)
+        self._rda_timer.start(100)
+
+    def _check_rda_extraction(self):
         try:
-            app_dir = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
-            rda_path = os.path.join(app_dir, "RdaConsole.exe")
-            if not os.path.isfile(rda_path):
-                box = QMessageBox(self)
-                box.setIcon(QMessageBox.Icon.Warning)
-                box.setWindowTitle("RdaConsole.exe not found")
-                box.setTextFormat(Qt.TextFormat.RichText)
-                box.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
-                box.setText(
-                    "RdaConsole.exe was not found.<br><br>"
-                    "Please download RdaConsole here:<br>"
-                    "<a href='https://github.com/anno-mods/RdaConsole/releases'>"
-                    "RdaConsole GitHub</a><br><br>"
-                    f"Then place RdaConsole.exe in the application directory:<br>{app_dir}"
+            while True:
+                message = self._rda_queue.get_nowait()
+                kind = message[0]
+                if kind == "progress":
+                    _kind, label, current, total = message
+                    self._rda_progress.setLabelText(label)
+                    if total:
+                        self._rda_progress.setRange(0, total)
+                        self._rda_progress.setValue(current)
+                    else:
+                        self._rda_progress.setRange(0, 0)
+                elif kind == "finished":
+                    self._finish_rda_extraction(*message[1:])
+                    return
+                else:
+                    self._finish_rda_extraction_error(message[1], message[2])
+                    return
+        except Empty:
+            if not self._rda_process.is_alive():
+                self._finish_rda_extraction_error(
+                    "ProcessError", "The extraction process ended unexpectedly."
                 )
-                box.exec()
-                return
-            if game_name == "Anno 1800":
-                args, returncode, output = extract_anno1800_gamefiles(
-                    app_dir, game_folder, output_folder
-                )
-            else:
-                args, returncode, output = run_rda_extract(app_dir, archive, output_folder)
-            self.append_debug_log("[rda] Running: " + " ".join(f'\"{arg}\"' for arg in args))
-            self.append_debug_log(f"[rda] Exit code: {returncode}\n{output.strip()}")
-            if returncode not in (0, NET_CONSOLE_EXIT_CODE):
-                QMessageBox.critical(
-                    self,
-                    "Extract gamefiles failed",
-                    f"RdaConsole exit code: {returncode}\n\n{output[-4000:]}",
-                )
-                return
-            self.statusBar().showMessage(f"Extraction finished for {game_name}", 5000)
-            if output.strip():
-                self.append_debug_log(output.strip())
-        except subprocess_timeout_error:
-            QMessageBox.critical(self, "Extract gamefiles", "RdaConsole timed out after 300 seconds.")
-        except OSError as exc:
-            QMessageBox.critical(self, "Extract gamefiles", str(exc))
+
+    def _cleanup_rda_extraction(self):
+        self._rda_timer.stop()
+        self._rda_progress.close()
+        self._rda_process.join()
+        self._rda_process = None
+
+    def _finish_rda_extraction(self, args, returncode, output):
+        self._cleanup_rda_extraction()
+        self.append_debug_log("[rda] Running: " + " ".join(f'\"{arg}\"' for arg in args))
+        self.append_debug_log(f"[rda] Exit code: {returncode}\n{output.strip()}")
+        if returncode not in (0, NET_CONSOLE_EXIT_CODE):
+            QMessageBox.critical(self, "Extract gamefiles failed",
+                                 f"RdaConsole exit code: {returncode}\n\n{output[-4000:]}")
+            return
+        self.statusBar().showMessage(f"Extraction finished for {self._rda_game_name}", 5000)
+
+    def _finish_rda_extraction_error(self, error_type, error_message):
+        self._cleanup_rda_extraction()
+        if error_type == "TimeoutExpired":
+            error_message = "RdaConsole timed out after 300 seconds."
+        QMessageBox.critical(self, "Extract gamefiles", error_message)
 
     def save_settings(self):
 
@@ -1812,6 +1866,7 @@ class AnnoModTool(QMainWindow):
 
 if __name__ == "__main__":
 
+    multiprocessing.freeze_support()
     app = QApplication(sys.argv)
     window = AnnoModTool()
     window.show()

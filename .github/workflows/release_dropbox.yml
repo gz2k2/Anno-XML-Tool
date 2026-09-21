@@ -5,7 +5,7 @@ on:
     branches:
       - main
     tags:
-      - 'xxxxxxxx*'
+      - 'db*'
   workflow_dispatch:
 
 permissions:

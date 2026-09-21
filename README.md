@@ -14,6 +14,8 @@
 * **Smart Template Filtering:** Narrow down your search by filtering assets to display only those belonging to a specific template.
 * **Data Export:** Easily export complete XML data—including all active effects and buffs (if applicable)—for external use or modding.
 
+* **Gamefile Extraction:** Extract XML gamefiles from Anno 117 and Anno 1800 RDA archives directly from the Settings tab. A progress window keeps the interface responsive while extraction runs in a separate process.
+
 ### Project Description
 **Anno XML Viewer** is a lightweight, intuitive tool designed to streamline data exploration for *Anno* modders. Instead of digging through massive, disorganized XML files, this tool allows you to search for assets instantly using their **Name** or **GUID**. 
  
@@ -26,6 +28,7 @@ Once an asset is selected, the program dynamically maps out its entire ecosystem
 | **Relational Views** | Automatic display of references, effects, and buffs |
 | **Filtering** | Filter by specific asset templates |
 | **Export** | Full XML dump including active buffs/effects |
+| **Gamefile Extraction** | Extract Anno 117 / Anno 1800 XML gamefiles from RDA archives with progress feedback |
 
 ## Support
 
@@ -46,6 +49,8 @@ If this tool helps you, I would appreciate a coffee!
 * **Umfassende Asset-Einblicke:** Bei Auswahl eines Assets werden automatisch alle damit verknüpften **Referenzen (References)**, **Effekte (Effects)** und **Buffs** in einer strukturierten Ansicht angezeigt.
 * **Intelligente Template-Filterung:** Grenzen Sie Ihre Suche präzise ein, indem Sie über Filter festlegen, dass nur Assets eines bestimmten Templates angezeigt werden.
 * **Datenexport:** Exportieren Sie mühelos die vollständigen XML-Daten – einschließlich aller aktiven Effekte und Buffs (falls vorhanden) – für die externe Weiterverwendung oder das Modding.
+
+* **Gamefile-Extraktion:** Extrahieren Sie XML-Gamefiles aus den RDA-Archiven von Anno 117 und Anno 1800 direkt im Reiter Settings. Ein Fortschrittsfenster haelt die Oberflaeche waehrend der Extraktion in einem separaten Prozess reaktionsfaehig.
 
 ### Projektbeschreibung
 **Anno XML Viewer** ist ein leichtgewichtiges, intuitives Tool, das die Datenanalyse für *Anno*-Modder rationalisiert. Anstatt sich durch riesige, unübersichtliche XML-Dateien zu wühlen, ermöglicht dieses Programm das sofortige Aufspüren von Assets anhand ihres **Namens** oder ihrer **GUID**. 

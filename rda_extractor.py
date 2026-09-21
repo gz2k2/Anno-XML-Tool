@@ -59,7 +59,8 @@ def _data_rda_sort_key(path):
     return int(match.group(1) or 0) if match else -1
 
 
-def extract_anno1800_gamefiles(app_dir, game_folder, output_folder, timeout=300):
+def extract_anno1800_gamefiles(app_dir, game_folder, output_folder, timeout=300,
+                               progress_callback=None):
     archives = []
     for root, _dirs, files in os.walk(game_folder):
         for name in files:
@@ -69,13 +70,22 @@ def extract_anno1800_gamefiles(app_dir, game_folder, output_folder, timeout=300)
     if not archives:
         raise FileNotFoundError(os.path.join(game_folder, "data*.rda"))
 
+    if progress_callback:
+        progress_callback("Searching required XML files...", 0, len(archives))
+
     os.makedirs(output_folder, exist_ok=True)
     missing = set(ANNO1800_FILES)
     logs = []
     last_command, last_code = [], 0
-    for archive in archives:
+    for archive_index, archive in enumerate(archives, start=1):
         if not missing:
             break
+        if progress_callback:
+            progress_callback(
+                f"Extracting {os.path.basename(archive)} ({archive_index}/{len(archives)})...",
+                archive_index - 1,
+                len(archives),
+            )
         wanted = sorted(missing)
         pattern = r"(?:^|[\\/])(" + "|".join(re.escape(name) for name in wanted) + r")$"
         command, code, output = extract_archive(app_dir, archive, output_folder, pattern, timeout)

@@ -57,6 +57,13 @@ The **Settings** tab stores application configuration.
 * **Buff/Effect XML tags:** Edit the tag list used to detect linked buffs and effects. Use **Add Tag** and **Remove Selected Tag** to manage entries.
 * **Save Settings:** Writes paths, default language, and buff/effect tags to `config.ini`, then reloads the active XML folder.
 
+#### Gamefile Extraction (RDA)
+The **Settings** tab can extract XML gamefiles directly from installed game archives.
+* Configure the respective Anno game folder, then select **Extract Anno 117 gamefiles** or **Extract Anno 1800 gamefiles** and choose an output folder.
+* Anno 117 requires `maindata/config.rda`; Anno 1800 searches the game folder for `data*.rda` archives.
+* `RdaConsole.exe` must be placed in the application directory. If it is missing, the tool displays a download link.
+* Extraction runs in a separate process. A progress window remains visible throughout the operation; for Anno 1800 it identifies the archive currently being processed.
+
 #### Export
 The **EXPORT XML** button saves the selected asset into a new XML file. It performs a recursive export: detected buffs and effects are included based on the active Buff/Effect filter, which makes it useful for creating standalone mod snippets.
 
@@ -118,6 +125,13 @@ Der Reiter **Settings** verwaltet die Anwendungskonfiguration.
 * **Default Language:** Legt die Sprache fest, die nach dem Laden standardmaessig verwendet wird.
 * **Buff/Effect XML tags:** Bearbeitet die Tag-Liste, mit der verknuepfte Buffs und Effekte erkannt werden. Eintraege werden mit **Add Tag** und **Remove Selected Tag** verwaltet.
 * **Save Settings:** Speichert Pfade, Standardsprache und Buff-/Effect-Tags in `config.ini` und laedt den aktiven XML-Ordner neu.
+
+#### Gamefile-Extraktion (RDA)
+Im Reiter **Settings** lassen sich XML-Gamefiles direkt aus den installierten Spielarchiven extrahieren.
+* Konfiguriere den jeweiligen Anno-Spielordner, waehle **Extract Anno 117 gamefiles** oder **Extract Anno 1800 gamefiles** und anschliessend einen Ausgabeordner.
+* Anno 117 benoetigt `maindata/config.rda`; bei Anno 1800 wird der Spielordner nach `data*.rda`-Archiven durchsucht.
+* `RdaConsole.exe` muss im Anwendungsverzeichnis liegen. Fehlt die Datei, zeigt das Tool einen Download-Link an.
+* Die Extraktion laeuft in einem separaten Prozess. Ein Fortschrittsfenster bleibt waehrend des Vorgangs sichtbar und zeigt bei Anno 1800 das gerade bearbeitete Archiv an.
 
 #### Export
 Der Button **EXPORT XML** speichert das ausgewaehlte Asset in eine neue XML-Datei. Dabei erfolgt ein rekursiver Export: Erkannte Buffs und Effekte werden basierend auf dem aktiven Buff-/Effect-Filter mit exportiert. Das ist nuetzlich zum Erstellen eigenstaendiger Mod-Snippets.
