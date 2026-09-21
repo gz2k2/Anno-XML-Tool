@@ -23,8 +23,8 @@ def _indent(element, level=0):
 
 def differing_line_numbers(left_text, right_text):
     """Return zero-based line numbers that differ in each text."""
-    left_lines = left_text.splitlines()
-    right_lines = right_text.splitlines()
+    left_lines = (left_text or "").splitlines()
+    right_lines = (right_text or "").splitlines()
     left_differences, right_differences = set(), set()
 
     matcher = SequenceMatcher(None, left_lines, right_lines, autojunk=False)
@@ -49,28 +49,40 @@ class GuidCompareLoader(QThread):
         self.guid = guid
 
     def run(self):
-        if not self.folder or not os.path.exists(self.folder) or not self.guid:
-            self.finished.emit(self.request_id, self.folder, f"GUID {self.guid} nicht gefunden.")
-            return
-
         try:
-            asset_paths = glob.glob(os.path.join(self.folder, "**/assets.xml"), recursive=True)
-            if not asset_paths:
-                self.finished.emit(self.request_id, self.folder, "Keine assets.xml gefunden.")
+            if not self.folder or not os.path.exists(self.folder):
+                self.finished.emit(self.request_id, self.folder, f"Ordner nicht gefunden: {self.folder}")
                 return
 
-            for a_path in asset_paths:
-                for event, elem in ET.iterparse(a_path, events=("end",)):
-                    if elem.tag == "Asset":
-                        vals = elem.find("Values")
-                        if vals is not None and vals.findtext(".//GUID") == self.guid:
-                            _indent(elem)
-                            xml_str = ET.tostring(elem, encoding="unicode")
-                            elem.clear()
-                            self.finished.emit(self.request_id, self.folder, xml_str)
-                            return
-                        elem.clear()
+            target_guid = str(self.guid).strip()
+            if not target_guid:
+                self.finished.emit(self.request_id, self.folder, "Keine GUID angegeben.")
+                return
 
-            self.finished.emit(self.request_id, self.folder, f"GUID {self.guid} nicht gefunden.")
-        except Exception as e:
-            self.finished.emit(self.request_id, self.folder, f"Fehler beim Suchen der GUID: {str(e)}")
+            xml_files = glob.glob(os.path.join(self.folder, "**/*.xml"), recursive=True)
+            found_element = None
+
+            for filepath in xml_files:
+                try:
+                    tree = ET.parse(filepath)
+                    root = tree.getroot()
+                    for asset in root.iter("Asset"):
+                        vals = asset.find("Values")
+                        if vals is not None:
+                            guid_elem = vals.find(".//GUID")
+                            if guid_elem is not None and guid_elem.text and guid_elem.text.strip() == target_guid:
+                                found_element = asset
+                                break
+                    if found_element is not None:
+                        break
+                except Exception:
+                    continue
+
+            if found_element is not None:
+                _indent(found_element)
+                content = ET.tostring(found_element, encoding="unicode")
+                self.finished.emit(self.request_id, self.folder, content)
+            else:
+                self.finished.emit(self.request_id, self.folder, f"GUID {target_guid} nicht gefunden in {self.folder}")
+        except Exception as exc:
+            self.finished.emit(self.request_id, self.folder, f"Fehler bei der Suche: {str(exc)}")
