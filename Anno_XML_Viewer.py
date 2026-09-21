@@ -7,6 +7,7 @@ from queue import Empty
 from urllib.request import urlopen
 from rda_extractor import (NET_CONSOLE_EXIT_CODE, extract_gamefiles as run_rda_extract,
                            extract_anno1800_gamefiles)
+from guid_compare import GuidCompareLoader, differing_line_numbers
 from datetime import datetime
 import xml.etree.ElementTree as ET
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
@@ -17,7 +18,8 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QDialogButtonBox, QComboBox, QTabWidget, QGroupBox,
                              QCheckBox, QProgressDialog)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSettings, QUrl, QTimer
-from PyQt6.QtGui import QSyntaxHighlighter, QTextCharFormat, QColor, QFont, QAction, QPixmap, QIcon
+from PyQt6.QtGui import (QSyntaxHighlighter, QTextCharFormat, QColor, QFont, QAction,
+                         QPixmap, QIcon, QTextCursor)
 from PyQt6.QtGui import QDesktopServices
 
 APP_NAME = "Anno XML Viewer by gz2k2"
@@ -418,6 +420,22 @@ class AnnoModTool(QMainWindow):
         self.block_signals = False
         self.settings.setValue("Paths/xml_paths", paths)
         self.settings.setValue("Paths/xml_path", self.combo_xml_path.currentText())
+        self._sync_guid_compare_paths()
+
+    def _sync_guid_compare_paths(self):
+        """Keep GUID Compare path selectors identical to the main XML selector."""
+        if not hasattr(self, "compare_left_path"):
+            return
+
+        paths = [self.combo_xml_path.itemText(index) for index in range(self.combo_xml_path.count())]
+        for selector in (self.compare_left_path, self.compare_right_path):
+            selected_path = selector.currentText()
+            selector.blockSignals(True)
+            selector.clear()
+            selector.addItems(paths)
+            if selected_path in paths:
+                selector.setCurrentText(selected_path)
+            selector.blockSignals(False)
 
     def on_xml_path_changed(self, index):
 
@@ -439,6 +457,7 @@ class AnnoModTool(QMainWindow):
                 self.combo_xml_path.removeItem(combo_index)
             if self.combo_xml_path.count() and self.combo_xml_path.currentIndex() < 0:
                 self.combo_xml_path.setCurrentIndex(0)
+            self._sync_guid_compare_paths()
 
     def _load_buff_filter_tags(self):
 
@@ -1026,7 +1045,67 @@ class AnnoModTool(QMainWindow):
         self.templates_filter.textChanged.connect(self.filter_templates)
         self.templates_list.itemClicked.connect(self.preview_template)
 
-        # TAB 4: STRUKTUR BIBLIOTHEK ###################################################
+        # TAB 4: GUID COMPARE #########################################################
+
+        self.guid_compare_tab = QWidget()
+        self.tabs.addTab(self.guid_compare_tab, "GUID Compare")
+        compare_layout = QVBoxLayout(self.guid_compare_tab)
+
+        compare_search_row = QHBoxLayout()
+        self.compare_watchlist = QComboBox()
+        self.compare_watchlist.setMinimumWidth(260)
+        self.compare_watchlist.setToolTip("Select a GUID from the watchlist")
+        self.compare_guid_input = QLineEdit()
+        self.compare_guid_input.setPlaceholderText("Enter a GUID to compare...")
+        self.btn_compare_guid = QPushButton("Compare GUID")
+        compare_search_row.addWidget(QLabel("Watchlist:"))
+        compare_search_row.addWidget(self.compare_watchlist)
+        compare_search_row.addWidget(self.compare_guid_input)
+        compare_search_row.addWidget(self.btn_compare_guid)
+        compare_layout.addLayout(compare_search_row)
+
+        compare_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.compare_left_path = QComboBox()
+        self.compare_right_path = QComboBox()
+        self.compare_left_path.addItems(self.xml_paths)
+        self.compare_right_path.addItems(self.xml_paths)
+        self.compare_left_path.setCurrentText(self.combo_xml_path.currentText())
+        self.compare_right_path.setCurrentText(self.combo_xml_path.currentText())
+
+        left_compare_panel = QWidget()
+        left_compare_layout = QVBoxLayout(left_compare_panel)
+        left_compare_layout.setContentsMargins(0, 0, 0, 0)
+        left_compare_layout.addWidget(self.compare_left_path)
+        self.compare_left_xml = QTextEdit()
+        self.compare_left_xml.setReadOnly(True)
+        self.compare_left_xml.setPlainText("Enter a GUID to compare.")
+        left_compare_layout.addWidget(self.compare_left_xml)
+
+        right_compare_panel = QWidget()
+        right_compare_layout = QVBoxLayout(right_compare_panel)
+        right_compare_layout.setContentsMargins(0, 0, 0, 0)
+        right_compare_layout.addWidget(self.compare_right_path)
+        self.compare_right_xml = QTextEdit()
+        self.compare_right_xml.setReadOnly(True)
+        self.compare_right_xml.setPlainText("Enter a GUID to compare.")
+        right_compare_layout.addWidget(self.compare_right_xml)
+
+        compare_splitter.addWidget(left_compare_panel)
+        compare_splitter.addWidget(right_compare_panel)
+        compare_splitter.setSizes([600, 600])
+        compare_layout.addWidget(compare_splitter)
+
+        self._guid_compare_request_id = 0
+        self._guid_compare_workers = []
+        self._guid_compare_results = {}
+        self._refresh_compare_watchlist()
+        self.compare_watchlist.currentIndexChanged.connect(self._select_compare_watchlist_guid)
+        self.compare_guid_input.returnPressed.connect(self.compare_guid)
+        self.btn_compare_guid.clicked.connect(self.compare_guid)
+        self.compare_left_path.currentIndexChanged.connect(lambda _index: self.compare_guid())
+        self.compare_right_path.currentIndexChanged.connect(lambda _index: self.compare_guid())
+
+        # TAB 5: STRUKTUR BIBLIOTHEK ###################################################
 
         self.lib_tab = QWidget()
         self.tabs.addTab(self.lib_tab, "Structure Library")   
@@ -1150,6 +1229,8 @@ class AnnoModTool(QMainWindow):
             self.xml_editor, 
             self.lib_preview, 
             self.templates_preview,
+            self.compare_left_xml,
+            self.compare_right_xml,
             self.buff_view,
             self.debug_console
         ]
@@ -1181,6 +1262,65 @@ class AnnoModTool(QMainWindow):
 
 
     # ASSET LOGIC ##################################################################
+
+    def compare_guid(self):
+        guid = self.compare_guid_input.text().strip()
+        self._guid_compare_request_id += 1
+        request_id = self._guid_compare_request_id
+        self._guid_compare_results = {}
+
+        if not guid:
+            self.compare_left_xml.setPlainText("Enter a GUID to compare.")
+            self.compare_right_xml.setPlainText("Enter a GUID to compare.")
+            return
+
+        for side, folder, preview in (
+            ("left", self.compare_left_path.currentText(), self.compare_left_xml),
+            ("right", self.compare_right_path.currentText(), self.compare_right_xml),
+        ):
+            preview.setPlainText(f"Searching for GUID {guid}...")
+            preview.setExtraSelections([])
+            worker = GuidCompareLoader(request_id, folder, guid, self)
+            worker.finished.connect(
+                lambda result_id, _folder, content, compare_side=side, target=preview:
+                self._show_guid_compare_result(result_id, compare_side, content, target)
+            )
+            worker.finished.connect(worker.deleteLater)
+            worker.finished.connect(
+                lambda *_args, worker=worker: self._guid_compare_workers.remove(worker)
+                if worker in self._guid_compare_workers else None
+            )
+            self._guid_compare_workers.append(worker)
+            worker.start()
+
+    def _show_guid_compare_result(self, request_id, side, content, preview):
+        if request_id == self._guid_compare_request_id:
+            preview.setPlainText(content)
+            self._guid_compare_results[side] = content
+            if len(self._guid_compare_results) == 2:
+                self._highlight_guid_compare_differences()
+
+    def _highlight_guid_compare_differences(self):
+        left_lines, right_lines = differing_line_numbers(
+            self._guid_compare_results["left"], self._guid_compare_results["right"]
+        )
+        self._set_compare_line_highlights(self.compare_left_xml, left_lines, QColor("#5a3030"))
+        self._set_compare_line_highlights(self.compare_right_xml, right_lines, QColor("#303f5a"))
+
+    @staticmethod
+    def _set_compare_line_highlights(preview, line_numbers, color):
+        selections = []
+        for line_number in line_numbers:
+            block = preview.document().findBlockByNumber(line_number)
+            if not block.isValid():
+                continue
+            selection = QTextEdit.ExtraSelection()
+            selection.cursor = QTextCursor(block)
+            selection.cursor.select(QTextCursor.SelectionType.LineUnderCursor)
+            selection.format.setBackground(color)
+            selection.format.setProperty(QTextCharFormat.Property.FullWidthSelection, True)
+            selections.append(selection)
+        preview.setExtraSelections(selections)
 
     def _start_version_check(self):
         self._version_check_worker = VersionCheckWorker(self.app_version, self)
@@ -1235,6 +1375,7 @@ class AnnoModTool(QMainWindow):
             if self.combo_xml_path.findText(folder) == -1:
                 self.combo_xml_path.addItem(folder)
             self.combo_xml_path.setCurrentText(folder)
+            self._sync_guid_compare_paths()
 
     def _create_folder_setting_row(self, parent_layout, label_text, settings_key, dialog_title):
         row=QHBoxLayout()
@@ -1691,6 +1832,31 @@ class AnnoModTool(QMainWindow):
             self.watchlist_table.setItem(row, 1, QTableWidgetItem(self._display_name_for_guid(guid)))
 
         self.watchlist_table.setSortingEnabled(True)
+        self._refresh_compare_watchlist()
+
+    def _refresh_compare_watchlist(self):
+        """Mirror watchlist entries into the GUID Compare selector."""
+        if not hasattr(self, "compare_watchlist"):
+            return
+
+        selected_guid = self.compare_watchlist.currentData()
+        self.compare_watchlist.blockSignals(True)
+        self.compare_watchlist.clear()
+        self.compare_watchlist.addItem("Select watchlist entry...", None)
+        for guid in self.watchlist_guids:
+            self.compare_watchlist.addItem(
+                f"{guid} — {self._display_name_for_guid(guid)}", guid
+            )
+
+        selected_index = self.compare_watchlist.findData(selected_guid)
+        self.compare_watchlist.setCurrentIndex(selected_index if selected_index >= 0 else 0)
+        self.compare_watchlist.blockSignals(False)
+
+    def _select_compare_watchlist_guid(self, index):
+        guid = self.compare_watchlist.itemData(index)
+        if guid:
+            self.compare_guid_input.setText(str(guid))
+            self.compare_guid()
 
     def add_selected_to_watchlist(self):
 
