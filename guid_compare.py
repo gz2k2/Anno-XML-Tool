@@ -49,23 +49,28 @@ class GuidCompareLoader(QThread):
         self.guid = guid
 
     def run(self):
+        if not self.folder or not os.path.exists(self.folder) or not self.guid:
+            self.finished.emit(self.request_id, self.folder, f"GUID {self.guid} nicht gefunden.")
+            return
+
         try:
             asset_paths = glob.glob(os.path.join(self.folder, "**/assets.xml"), recursive=True)
             if not asset_paths:
-                self.finished.emit(self.request_id, self.folder, "assets.xml was not found in this folder.")
+                self.finished.emit(self.request_id, self.folder, "Keine assets.xml gefunden.")
                 return
 
-            for _event, element in ET.iterparse(asset_paths[0], events=("end",)):
-                if element.tag != "Asset":
-                    continue
-                if (element.findtext(".//GUID") or "").strip() == self.guid:
-                    _indent(element)
-                    self.finished.emit(
-                        self.request_id, self.folder, ET.tostring(element, encoding="unicode")
-                    )
-                    return
-                element.clear()
+            for a_path in asset_paths:
+                for event, elem in ET.iterparse(a_path, events=("end",)):
+                    if elem.tag == "Asset":
+                        vals = elem.find("Values")
+                        if vals is not None and vals.findtext(".//GUID") == self.guid:
+                            _indent(elem)
+                            xml_str = ET.tostring(elem, encoding="unicode")
+                            elem.clear()
+                            self.finished.emit(self.request_id, self.folder, xml_str)
+                            return
+                        elem.clear()
 
-            self.finished.emit(self.request_id, self.folder, f"GUID {self.guid} was not found.")
-        except Exception as exc:
-            self.finished.emit(self.request_id, self.folder, f"Unable to read XML: {exc}")
+            self.finished.emit(self.request_id, self.folder, f"GUID {self.guid} nicht gefunden.")
+        except Exception as e:
+            self.finished.emit(self.request_id, self.folder, f"Fehler beim Suchen der GUID: {str(e)}")

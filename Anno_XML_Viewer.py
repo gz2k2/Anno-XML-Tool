@@ -1309,9 +1309,14 @@ class AnnoModTool(QMainWindow):
 
     @staticmethod
     def _set_compare_line_highlights(preview, line_numbers, color):
+        if not line_numbers:
+            preview.setExtraSelections([])
+            return
+
         selections = []
+        doc = preview.document()
         for line_number in line_numbers:
-            block = preview.document().findBlockByNumber(line_number)
+            block = doc.findBlockByNumber(line_number)
             if not block.isValid():
                 continue
             selection = QTextEdit.ExtraSelection()
