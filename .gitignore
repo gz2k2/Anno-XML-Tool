@@ -19,3 +19,6 @@ dist/
 config.ini
 auto-exe-to-py.json
 *copy*
+
+#rda
+Rda*.*

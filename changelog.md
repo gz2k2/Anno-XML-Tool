@@ -1,7 +1,5 @@
 ## Changelog
 
 - **Added**
-  - Watchlist for saving and quickly reopening selected assets
-
-- **Fixed**
-  - Removed the white corner field next to the GUID headers in the top tables
+  - Support for RdaConsole.exe (Gamefiles can now be extracted within the XML Tool)
+  - Support for Anno 1800 Gamefiles

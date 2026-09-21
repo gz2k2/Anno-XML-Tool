@@ -2,11 +2,13 @@ import sys
 import os
 import glob
 import re
+from rda_extractor import (NET_CONSOLE_EXIT_CODE, extract_gamefiles as run_rda_extract,
+                           extract_anno1800_gamefiles, subprocess_timeout_error)
 from datetime import datetime
 import xml.etree.ElementTree as ET
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLineEdit, QTableWidget, QTableWidgetItem, 
-                             QPushButton, QFileDialog, QLabel, QHeaderView, QTextEdit, 
+                             QPushButton, QFileDialog, QLabel, QMessageBox, QHeaderView, QTextEdit, 
                              QSplitter, QMessageBox, QTreeWidget, QTreeWidgetItem, 
                              QMenu, QDialog, QListWidget, QListWidgetItem, 
                              QDialogButtonBox, QComboBox, QTabWidget, QGroupBox,
@@ -166,10 +168,13 @@ class AnnoLoader(QThread):
                 lang_dict = {}
                 tex_tree = ET.parse(tf)
                 for tex in tex_tree.findall(".//Text"):
-                    line_id = tex.findtext("LineId")
+                    # Anno 117 uses LineId, while Anno 1800 uses GUID for
+                    # the same text-key purpose.
+                    line_id = tex.findtext("LineId") or tex.findtext("GUID")
                     content = tex.findtext("Text")
 
-                    if line_id: lang_dict[line_id] = content
+                    if line_id and content is not None:
+                        lang_dict[line_id.strip()] = content
 
                 languages[lang_name] = lang_dict
                 self.debug_log.emit(f"Language loaded: {lang_name} ({len(lang_dict)} entries)")
@@ -206,14 +211,33 @@ class AnnoLoader(QThread):
                                     t = child.text.strip()
                                     if t.replace("-", "").isdigit():
                                         text_ids.add(t)
+
+                            # Anno 1800 stores the localized display text
+                            # reference as Text/LineID in assets.xml.
+                            asset_line_id = (
+                                vals.findtext(".//Text/LineID")
+                                or elem.findtext(".//Text/LineID")
+                            )
+                            if asset_line_id:
+                                text_ids.add(asset_line_id.strip())
+
+                            inline_display_text = elem.findtext(".//LocaText/English/Text")
                             
                             assets[guid] = {
                                 "xml": ET.tostring(elem, encoding='unicode'),
                                 "template_name": template_name,
-                                "oasis_id": vals.findtext(".//Text/OasisId"),
+                                "oasis_id": (
+                                    vals.findtext(".//Text/OasisId")
+                                    or vals.findtext(".//Text/LineID")
+                                    or elem.findtext(".//Text/LineID")
+                                ),
                                 "visible_tech_name_id": vals.findtext(".//Tech/VisibleTechName"),
                                 "info_description_id": vals.findtext(".//Standard/InfoDescription"),
-                                "fallback_name": vals.findtext(".//Standard/Name") or "N/A",
+                                "fallback_name": (
+                                    inline_display_text
+                                    or vals.findtext(".//Standard/Name")
+                                    or "N/A"
+                                ),
                                 "text_ids": list(text_ids)
                             }
                             asset_count += 1
@@ -968,6 +992,14 @@ class AnnoModTool(QMainWindow):
         path_group = QGroupBox("Path Configuration")
         path_layout = QVBoxLayout(path_group)
 
+        game_folders_group = QGroupBox("Game Folders")
+        game_folders_layout = QVBoxLayout(game_folders_group)
+        self.edit_anno117_folder = self._create_folder_setting_row(game_folders_layout, "Anno 117 Folder:", "Paths/anno117_folder", "Select Anno 117 root folder")
+        self._add_extract_button(game_folders_layout, "Anno 117", self.edit_anno117_folder)
+        self.edit_anno1800_folder = self._create_folder_setting_row(game_folders_layout, "Anno 1800 Folder:", "Paths/anno1800_folder", "Select Anno 1800 root folder")
+        self._add_extract_button(game_folders_layout, "Anno 1800", self.edit_anno1800_folder)
+        set_layout.addWidget(game_folders_group)
+
         self.list_xml_paths = QListWidget()
         self.list_xml_paths.addItems(self.xml_paths)
         self.list_xml_paths.setMinimumHeight(120)
@@ -1112,6 +1144,95 @@ class AnnoModTool(QMainWindow):
                 self.combo_xml_path.addItem(folder)
             self.combo_xml_path.setCurrentText(folder)
 
+    def _create_folder_setting_row(self, parent_layout, label_text, settings_key, dialog_title):
+        row=QHBoxLayout()
+        path_edit=QLineEdit(str(self.settings.value(settings_key, "") or ""))
+        path_edit.setReadOnly(True)
+        path_edit.setPlaceholderText("Not configured")
+        path_edit.setToolTip(path_edit.text())
+        browse_button=QPushButton("Browse...")
+        browse_button.setFixedWidth(80)
+        def browse_folder():
+            folder=QFileDialog.getExistingDirectory(self, dialog_title, path_edit.text() if os.path.isdir(path_edit.text()) else "")
+            if folder:
+                path_edit.setText(folder)
+                path_edit.setToolTip(folder)
+                self.settings.setValue(settings_key, folder)
+                self.settings.sync()
+        browse_button.clicked.connect(browse_folder)
+        row.addWidget(QLabel(label_text))
+        row.addWidget(path_edit, 1)
+        row.addWidget(browse_button)
+        parent_layout.addLayout(row)
+        return path_edit
+
+    def _add_extract_button(self, parent_layout, game_name, folder_edit):
+        row = QHBoxLayout()
+        row.addStretch()
+        button = QPushButton(f"Extract {game_name} gamefiles")
+        button.clicked.connect(lambda: self.extract_gamefiles(game_name, folder_edit))
+        row.addWidget(button)
+        parent_layout.addLayout(row)
+
+    def extract_gamefiles(self, game_name, folder_edit):
+        game_folder = folder_edit.text().strip()
+        archive = os.path.join(game_folder, "maindata", "config.rda")
+        if game_name == "Anno 1800":
+            archive_exists = any(
+                name.lower().startswith("data") and name.lower().endswith(".rda")
+                for root, _dirs, files in os.walk(game_folder)
+                for name in files
+            )
+        else:
+            archive_exists = os.path.isfile(archive)
+        if not archive_exists:
+            expected = "data*.rda" if game_name == "Anno 1800" else "maindata/config.rda"
+            QMessageBox.warning(self, "Extract gamefiles", f"{expected} not found for {game_name}:\n{game_folder}")
+            return
+        output_folder = QFileDialog.getExistingDirectory(self, f"Select output folder for {game_name}")
+        if not output_folder:
+            return
+        try:
+            app_dir = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
+            rda_path = os.path.join(app_dir, "RdaConsole.exe")
+            if not os.path.isfile(rda_path):
+                box = QMessageBox(self)
+                box.setIcon(QMessageBox.Icon.Warning)
+                box.setWindowTitle("RdaConsole.exe not found")
+                box.setTextFormat(Qt.TextFormat.RichText)
+                box.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+                box.setText(
+                    "RdaConsole.exe was not found.<br><br>"
+                    "Please download RdaConsole here:<br>"
+                    "<a href='https://github.com/anno-mods/RdaConsole/releases'>"
+                    "RdaConsole GitHub</a><br><br>"
+                    f"Then place RdaConsole.exe in the application directory:<br>{app_dir}"
+                )
+                box.exec()
+                return
+            if game_name == "Anno 1800":
+                args, returncode, output = extract_anno1800_gamefiles(
+                    app_dir, game_folder, output_folder
+                )
+            else:
+                args, returncode, output = run_rda_extract(app_dir, archive, output_folder)
+            self.append_debug_log("[rda] Running: " + " ".join(f'\"{arg}\"' for arg in args))
+            self.append_debug_log(f"[rda] Exit code: {returncode}\n{output.strip()}")
+            if returncode not in (0, NET_CONSOLE_EXIT_CODE):
+                QMessageBox.critical(
+                    self,
+                    "Extract gamefiles failed",
+                    f"RdaConsole exit code: {returncode}\n\n{output[-4000:]}",
+                )
+                return
+            self.statusBar().showMessage(f"Extraction finished for {game_name}", 5000)
+            if output.strip():
+                self.append_debug_log(output.strip())
+        except subprocess_timeout_error:
+            QMessageBox.critical(self, "Extract gamefiles", "RdaConsole timed out after 300 seconds.")
+        except OSError as exc:
+            QMessageBox.critical(self, "Extract gamefiles", str(exc))
+
     def save_settings(self):
 
         paths = [self.list_xml_paths.item(row).text().strip() for row in range(self.list_xml_paths.count())]
@@ -1138,7 +1259,10 @@ class AnnoModTool(QMainWindow):
         self.settings.setValue("Paths/xml_paths", paths)
         self.settings.setValue("Paths/xml_path", self.combo_xml_path.currentText())
         self.settings.setValue("Paths/default_lang", lang)
+        self.settings.setValue("Paths/anno117_folder", self.edit_anno117_folder.text().strip())
+        self.settings.setValue("Paths/anno1800_folder", self.edit_anno1800_folder.text().strip())
         self.settings.setValue("Buffs/tags", "\n".join(tags))
+        self.settings.sync()
 
         active_path = self.combo_xml_path.currentText()
         if active_path and os.path.exists(active_path):
