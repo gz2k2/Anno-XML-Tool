@@ -4,6 +4,7 @@ import glob
 import re
 import multiprocessing
 from queue import Empty
+from urllib.request import urlopen
 from rda_extractor import (NET_CONSOLE_EXIT_CODE, extract_gamefiles as run_rda_extract,
                            extract_anno1800_gamefiles)
 from datetime import datetime
@@ -20,6 +21,9 @@ from PyQt6.QtGui import QSyntaxHighlighter, QTextCharFormat, QColor, QFont, QAct
 from PyQt6.QtGui import QDesktopServices
 
 APP_NAME = "Anno XML Viewer by gz2k2"
+GITHUB_PROJECT_URL = "https://github.com/gz2k2/Anno-XML-Tool"
+GITHUB_VERSION_URL = GITHUB_PROJECT_URL + "/blob/main/version.txt"
+GITHUB_VERSION_RAW_URL = "https://raw.githubusercontent.com/gz2k2/Anno-XML-Tool/main/version.txt"
 
 DEFAULT_BUFF_FILTER_TAGS = [
     "AdditionalFunctionalEffect",
@@ -92,6 +96,14 @@ def rda_extraction_worker(result_queue, app_dir, game_name, game_folder, output_
         result_queue.put(("error", type(exc).__name__, str(exc)))
 
 
+def version_key(version):
+    """Convert release versions such as 0.11.3-beta into comparable tuples."""
+    numbers = [int(part) for part in re.findall(r"\d+", version)]
+    numbers.extend([0] * (3 - len(numbers)))
+    # A prerelease is older than the matching final release.
+    return tuple(numbers[:3]) + (0 if "-" not in version else -1,)
+
+
 
 ################################################################################
 # UI COMPONENTS
@@ -139,6 +151,26 @@ class XMLHighlighter(QSyntaxHighlighter):
         
         for match in re.finditer(r">([^<]+)<", text):
             self.setFormat(match.start(1), match.end(1) - match.start(1), self.styles["text"])
+
+
+class VersionCheckWorker(QThread):
+    """Fetch the published version without blocking application startup."""
+
+    update_available = pyqtSignal(str)
+
+    def __init__(self, current_version, parent=None):
+        super().__init__(parent)
+        self.current_version = current_version
+
+    def run(self):
+        try:
+            with urlopen(GITHUB_VERSION_RAW_URL, timeout=5) as response:
+                latest_version = response.read().decode("utf-8").strip()
+            if latest_version and version_key(latest_version) > version_key(self.current_version):
+                self.update_available.emit(latest_version)
+        except Exception:
+            # An unavailable network connection must never prevent startup.
+            pass
 
 
 
@@ -360,9 +392,9 @@ class AnnoModTool(QMainWindow):
         elif saved_paths is None:
             saved_paths = []
 
-        legacy_path = self.settings.value("Paths/xml_path", "")
-        if not saved_paths and legacy_path:
-            saved_paths = [str(legacy_path)]
+        legacy_path = str(self.settings.value("Paths/xml_path", "") or "").strip()
+        if legacy_path and legacy_path not in saved_paths:
+            saved_paths.append(legacy_path)
 
         return list(dict.fromkeys(str(path) for path in saved_paths if str(path).strip()))
 
@@ -650,6 +682,7 @@ class AnnoModTool(QMainWindow):
         except Exception:
             pass
 
+        self.app_version = app_version
         self.setWindowTitle(f"{APP_NAME} v{app_version}")
         self.setWindowIcon(QIcon(resource_path("data/ui/AnnoXMLTool.ico")))
         self.resize(1280, 850)
@@ -761,7 +794,15 @@ class AnnoModTool(QMainWindow):
                     )
                 )
 
-        export_mod_layout.addWidget(kofi_label)
+        github_button = QPushButton("GitHub")
+        github_button.setFixedSize(btn_w, btn_h)
+        github_button.setToolTip("Open the Anno XML Tool project on GitHub")
+        github_button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(GITHUB_PROJECT_URL)))
+        support_buttons_layout = QHBoxLayout()
+        support_buttons_layout.setSpacing(4)
+        support_buttons_layout.addWidget(kofi_label)
+        support_buttons_layout.addWidget(github_button)
+        export_mod_layout.addLayout(support_buttons_layout)
 
         export_columns_layout.addLayout(export_xml_layout)
         export_columns_layout.addLayout(export_mod_layout)
@@ -771,8 +812,10 @@ class AnnoModTool(QMainWindow):
         self.combo_xml_path = QComboBox()
         self.combo_xml_path.setFixedWidth(300)
         self.combo_xml_path.addItems(self.xml_paths)
+        saved_path_index = self.combo_xml_path.findText(str(saved_path).strip())
+        if saved_path_index >= 0:
+            self.combo_xml_path.setCurrentIndex(saved_path_index)
         self.combo_xml_path.setToolTip("Select the XML data folder to use")
-        nav.addWidget(self.combo_xml_path)
 
         nav.addWidget(self.search)
 
@@ -788,6 +831,11 @@ class AnnoModTool(QMainWindow):
         nav.addLayout(export_columns_layout)
 
         main_layout.addLayout(nav)
+
+        language_row = QHBoxLayout()
+        language_row.addWidget(self.combo_xml_path)
+        language_row.addStretch()
+        main_layout.addLayout(language_row)
 
         # TABS #########################################################################
 
@@ -1129,8 +1177,29 @@ class AnnoModTool(QMainWindow):
         if active_path and os.path.exists(active_path):
             self.start_loading(active_path)
 
+        QTimer.singleShot(0, self._start_version_check)
+
 
     # ASSET LOGIC ##################################################################
+
+    def _start_version_check(self):
+        self._version_check_worker = VersionCheckWorker(self.app_version, self)
+        self._version_check_worker.update_available.connect(self._show_update_available)
+        self._version_check_worker.finished.connect(self._version_check_worker.deleteLater)
+        self._version_check_worker.start()
+
+    def _show_update_available(self, latest_version):
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle("Update available")
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        box.setText(
+            f"A newer version of Anno XML Viewer is available: "
+            f"<b>v{latest_version}</b> (you are using v{self.app_version}).<br><br>"
+            f"<a href='{GITHUB_VERSION_URL}'>View the latest version on GitHub</a>"
+        )
+        box.exec()
 
     def get_klartext(self, text):
 
