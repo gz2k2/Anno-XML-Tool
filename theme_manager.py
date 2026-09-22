@@ -24,9 +24,11 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import types
 
-from PyQt6.QtGui import QColor, QPalette
+from PyQt6.QtCore import QPoint, Qt
+from PyQt6.QtGui import QColor, QPainter, QPalette, QPen, QPixmap, QPolygon
 from PyQt6.QtWidgets import QApplication
 
 #: Environment variable qt-themes reads for additional theme search paths.
@@ -489,6 +491,200 @@ def combo_header_color(key: str) -> QColor:
 
 
 # --------------------------------------------------------------------------
+# Check boxes
+# --------------------------------------------------------------------------
+# Qt draws an indicator either with the widget style (Fusion, using the
+# palette) or with the stylesheet engine - never with both. Neither
+# stylesheet in this module used to mention QCheckBox at all, so the
+# indicators kept whatever Fusion made of a theme palette: on most dark
+# themes an almost black box on an almost black background, with a check
+# mark in a barely lighter grey.
+#
+# Worse, a single partial rule is enough to break them completely. The
+# search filter set only "QCheckBox::indicator { width: 12px; height: 12px }",
+# which handed the rendering to the stylesheet engine while specifying
+# neither border nor background - the same trap the QComboBox::drop-down
+# comment above warns about. The result was an invisible indicator.
+#
+# The indicators are therefore described COMPLETELY and centrally here.
+
+#: Edge length of an indicator in pixels.
+INDICATOR_SIZE = 14
+
+#: (colour name, size) -> PNG path, so the image is drawn once per theme.
+_CHECKMARK_CACHE: dict = {}
+
+
+def _icon_cache_dir() -> str:
+    """Folder for the generated check-mark images."""
+    path = os.path.join(tempfile.gettempdir(), "anno_xml_tool_icons")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def checkmark_image(color: QColor, size: int = INDICATOR_SIZE) -> str:
+    """Draw a check mark and return a path usable in ``image: url(...)``.
+
+    A stylesheet cannot draw a glyph by itself, and Qt ships no built-in
+    check-mark image that follows a palette. Rendering one to a PNG keeps
+    the mark in a colour that actually contrasts with the filled indicator.
+    Returns "" when no image could be produced; the caller then falls back
+    to a plain filled box, which still reads as "checked".
+    """
+    cache_key = (color.name(), size)
+    cached = _CHECKMARK_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    # QPixmap needs a running QApplication.
+    if QApplication.instance() is None:
+        return ""
+
+    path = os.path.join(_icon_cache_dir(),
+                        f"check_{color.name().lstrip('#')}_{size}.png")
+    url_path = path.replace("\\", "/")
+
+    if os.path.isfile(path):
+        _CHECKMARK_CACHE[cache_key] = url_path
+        return url_path
+
+    try:
+        pixmap = QPixmap(size, size)
+        pixmap.fill(QColor(0, 0, 0, 0))
+
+        painter = QPainter(pixmap)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            pen = QPen(color)
+            pen.setWidthF(max(1.6, size / 7.0))
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(pen)
+            # Relative coordinates keep the shape correct at any size.
+            # A QPolygon hits one unambiguous drawPolyline() overload;
+            # passing loose points relies on a variadic form instead.
+            painter.drawPolyline(QPolygon([
+                QPoint(round(x * size), round(y * size))
+                for x, y in ((0.22, 0.52), (0.42, 0.72), (0.78, 0.28))
+            ]))
+        finally:
+            painter.end()
+
+        if not pixmap.save(path, "PNG"):
+            return ""
+    except Exception:
+        # A read-only temp folder must not cost the application its theme.
+        return ""
+
+    _CHECKMARK_CACHE[cache_key] = url_path
+    return url_path
+
+
+def _outline(text: QColor, background: QColor, min_ratio: float = 3.0) -> QColor:
+    """Border colour that stays visible against *background*.
+
+    WCAG asks for 3:1 on non-text elements such as an input border. Blending
+    the text colour halfway into the background reaches that on dark themes
+    but falls short on very light ones (Catppuccin Latte lands at 2.5), so
+    the blend is strengthened until the target is met.
+    """
+    color = mix(text, background, 0.55)
+    weight = 0.55
+    while contrast_ratio(color, background) < min_ratio and weight < 1.0:
+        weight = min(1.0, weight + 0.1)
+        color = mix(text, background, weight)
+    return color
+
+
+def indicator_colors(key: str) -> dict:
+    """Colours of a check box indicator for the given theme."""
+    if key == ANNO_DARK:
+        base = QColor("#1e1e1e")
+        text = QColor("#e0e0e0")
+        window = QColor("#121212")
+    else:
+        app = QApplication.instance()
+        palette = app.palette() if app is not None else QPalette()
+        base = palette.base().color()
+        text = palette.text().color()
+        window = palette.window().color()
+
+    # The accent doubles as the fill of a checked box, so it has to stand
+    # out against the unchecked one.
+    accent = readable_on(QColor(_theme_accent(key)), base, 3.0)
+
+    # Black or white, whichever is easier to read on the filled box.
+    mark = max((QColor("#ffffff"), QColor("#000000")),
+               key=lambda candidate: contrast_ratio(candidate, accent))
+
+    return {
+        "base": base,
+        "text": text,
+        # A clearly visible outline: the Fusion default sits far too close
+        # to the background on most dark themes.
+        "border": _outline(text, base),
+        "accent": accent,
+        "accent_hover": accent.lighter(115) if is_dark(base) else accent.darker(110),
+        "mark": mark,
+        "muted": mix(text, window, 0.45),
+        "disabled_bg": mix(window, base, 0.5),
+        "disabled_border": mix(text, window, 0.28),
+    }
+
+
+#: Doubled braces: this is a .format() template, like THEMED_STYLESHEET.
+_CHECKBOX_TEMPLATE = """
+    QCheckBox {{ spacing: 6px; color: {text}; background: transparent; }}
+    QCheckBox:disabled {{ color: {muted}; }}
+    QCheckBox::indicator {{
+        width: {size}px;
+        height: {size}px;
+        border: 1px solid {border};
+        border-radius: 3px;
+        background-color: {base};
+    }}
+    QCheckBox::indicator:hover {{ border: 1px solid {accent}; }}
+    QCheckBox::indicator:checked {{
+        background-color: {accent};
+        border: 1px solid {accent};{check_image}
+    }}
+    QCheckBox::indicator:checked:hover {{
+        background-color: {accent_hover};
+        border: 1px solid {accent_hover};
+    }}
+    QCheckBox::indicator:disabled {{
+        background-color: {disabled_bg};
+        border: 1px solid {disabled_border};
+    }}
+    QCheckBox::indicator:checked:disabled {{
+        background-color: {disabled_border};
+        border: 1px solid {disabled_border};
+    }}
+"""
+
+
+def checkbox_stylesheet(key: str) -> str:
+    """Complete indicator rules for one theme, appended to its stylesheet."""
+    colors = indicator_colors(key)
+    image = checkmark_image(colors["mark"])
+    # Without an image the filled accent box alone marks the checked state.
+    check_image = f'\n        image: url("{image}");' if image else ""
+
+    return _CHECKBOX_TEMPLATE.format(
+        size=INDICATOR_SIZE,
+        text=colors["text"].name(),
+        muted=colors["muted"].name(),
+        base=colors["base"].name(),
+        border=colors["border"].name(),
+        accent=colors["accent"].name(),
+        accent_hover=colors["accent_hover"].name(),
+        disabled_bg=colors["disabled_bg"].name(),
+        disabled_border=colors["disabled_border"].name(),
+        check_image=check_image,
+    )
+
+
+# --------------------------------------------------------------------------
 # Applying
 # --------------------------------------------------------------------------
 def _theme_accent(key: str) -> str:
@@ -536,7 +732,9 @@ def apply_theme(window, key: str) -> str:
         if _default_style:
             app.setStyle(_default_style)
         app.setPalette(_default_palette)
-        window.setStyleSheet(ANNO_DARK_STYLESHEET)
+        # Appended rather than baked in: the rules depend on the palette
+        # that is active at this moment.
+        window.setStyleSheet(ANNO_DARK_STYLESHEET + checkbox_stylesheet(ANNO_DARK))
     else:
         # The window stylesheet has to go first, otherwise it keeps
         # overriding the palette that qt-themes installs.
@@ -547,10 +745,13 @@ def apply_theme(window, key: str) -> str:
         except Exception:
             # A broken theme file must never leave the UI unstyled.
             return apply_theme(window, ANNO_DARK)
+        # The indicator rules are formatted separately and appended: they
+        # have to be read after qt-themes installed its palette, because
+        # every colour in them is derived from it.
         app.setStyleSheet(THEMED_STYLESHEET.format(
             accent=_theme_accent(key),
             header=header_color(key).name(),
-        ))
+        ) + checkbox_stylesheet(key))
 
     return key
 

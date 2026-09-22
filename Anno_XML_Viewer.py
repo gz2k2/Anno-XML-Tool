@@ -784,11 +784,15 @@ class AnnoModTool(QMainWindow):
         self.lbl_filter = QLabel("Search-Filter")
         self.lbl_filter.setProperty("accentText", True)
         self.cb_search_main_only = QCheckBox("Search only GUID Text")
-        # Colours come from the theme; only the geometry is fixed here.
-        self.cb_search_main_only.setStyleSheet("""
-            QCheckBox { font-size: 10px; padding-left: 8px; }
-            QCheckBox::indicator { width: 12px; height: 12px; }
-        """)
+        # Only the label is tweaked here. This used to set
+        # "QCheckBox::indicator { width: 12px; height: 12px; }" as well -
+        # and that is exactly the Qt trap documented in theme_manager:
+        # touching a subcontrol hands its rendering to the stylesheet
+        # engine, which then drew no box at all because neither border nor
+        # background was given. The indicator is styled centrally now.
+        self.cb_search_main_only.setStyleSheet(
+            "QCheckBox { font-size: 10px; padding-left: 8px; }"
+        )
         self.cb_search_main_only.setToolTip("When checked, search is limited to GUID, Display Name, and Template.\nWhen unchecked, all text content within the asset is searched.")
         self.cb_search_main_only.setChecked(True)
         self.btn_template_filter.setCursor(Qt.CursorShape.PointingHandCursor)

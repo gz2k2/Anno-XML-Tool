@@ -1,5 +1,10 @@
 ## Changelog
 
+**v0.14.2-beta**
+
+- **Fixed**
+  - minor cosmetic issues.
+
 
 **v0.14.1-beta**
 
