@@ -1,7 +1,7 @@
 ## Changelog
 
 
-**v0.13.0-beta**
+**v0.13.4-beta**
 
 - **Added**
   - Theme selection under `Settings > General > Appearance` with live switching and persistence
@@ -26,6 +26,7 @@
   - Crash when comparing GUIDs (`QThread: Destroyed while thread is still running`)
   - Referenced GUIDs inside an asset could be mistaken for the asset's own GUID
   - Defective XML files are skipped and reported in the engine log instead of failing silently
+  - Anno 1800 compatibility
 
 
 **v0.12.5-beta**
