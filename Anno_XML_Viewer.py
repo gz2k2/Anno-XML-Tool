@@ -816,10 +816,10 @@ class AnnoModTool(QMainWindow):
         self.tabs = QTabWidget()
         main_layout.addWidget(self.tabs)
 
-        # TAB 1: ASSET EDITOR ##########################################################
+        # TAB 1: ASSET VIEWER ##########################################################
 
         self.editor_tab = QWidget()
-        self.tabs.addTab(self.editor_tab, "Asset Editor")
+        self.tabs.addTab(self.editor_tab, "Asset Viewer")
 
         ed_layout = QVBoxLayout(self.editor_tab)
         self.v_splitter = QSplitter(Qt.Orientation.Vertical)

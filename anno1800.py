@@ -64,6 +64,7 @@ class Anno1800Game(AnnoGame):
         "Amount",
         "InactiveAmount",    # sibling of Amount in <Maintenance>
         "MaximumHitPoints",
+        "BuildModeRandomRotation",
         "LineID",            # internal number, not a text key
     })
 
