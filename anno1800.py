@@ -66,6 +66,14 @@ class Anno1800Game(AnnoGame):
         "MaximumHitPoints",
         "BuildModeRandomRotation",
         "LineID",            # internal number, not a text key
+        "ActionWeight",
+        "AgreementThreshold",
+        "NotificationPriority",
+        "TraderRerollInterval",
+        "SellBudget",
+        "BuyBudget",
+        "ProductionPerMinute"
+
     })
 
     #: Extra data file shipped with Anno 1800.

@@ -891,11 +891,11 @@ class AnnoModTool(QMainWindow):
         watch_header.setProperty("sectionHeader", True)
 
         self.btn_watch_add = QPushButton("+")
-        self.btn_watch_add.setFixedWidth(28)
+        self.btn_watch_add.setFixedWidth(32)
         self.btn_watch_add.setToolTip("Add selected asset to watchlist")
 
         self.btn_watch_remove = QPushButton("-")
-        self.btn_watch_remove.setFixedWidth(28)
+        self.btn_watch_remove.setFixedWidth(32)
         self.btn_watch_remove.setToolTip("Remove selected watchlist entry")
 
         watch_header_layout.addWidget(watch_header)
