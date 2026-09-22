@@ -7,7 +7,9 @@ from queue import Empty
 from urllib.request import urlopen
 from rda_extractor import (NET_CONSOLE_EXIT_CODE, extract_gamefiles as run_rda_extract,
                            extract_anno1800_gamefiles)
-from guid_compare import GuidCompareLoader, differing_line_numbers
+from guid_compare import GuidCompareLoader
+from guid_diff_view import (DiffPane, SyncScrollGroup, set_diff_texts,
+                            format_stats)
 from datetime import datetime
 import xml.etree.ElementTree as ET
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
@@ -16,7 +18,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QSplitter, QMessageBox, QTreeWidget, QTreeWidgetItem, 
                              QMenu, QDialog, QListWidget, QListWidgetItem, 
                              QDialogButtonBox, QComboBox, QTabWidget, QGroupBox,
-                             QCheckBox, QProgressDialog)
+                             QCheckBox, QProgressDialog, QSizePolicy)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSettings, QUrl, QTimer
 from PyQt6.QtGui import (QSyntaxHighlighter, QTextCharFormat, QColor, QFont, QAction,
                          QPixmap, QIcon, QTextCursor)
@@ -26,6 +28,12 @@ APP_NAME = "Anno XML Viewer by gz2k2"
 GITHUB_PROJECT_URL = "https://github.com/gz2k2/Anno-XML-Tool"
 GITHUB_VERSION_URL = GITHUB_PROJECT_URL + "/blob/main/version.txt"
 GITHUB_VERSION_RAW_URL = "https://raw.githubusercontent.com/gz2k2/Anno-XML-Tool/main/version.txt"
+
+# XML base folders are kept per game: (key, display label, settings key).
+XML_PATH_GROUPS = (
+    ("anno117", "Anno 117 XML Files", "Paths/xml_paths_anno117"),
+    ("anno1800", "Anno 1800 XML Files", "Paths/xml_paths_anno1800"),
+)
 
 DEFAULT_BUFF_FILTER_TAGS = [
     "AdditionalFunctionalEffect",
@@ -400,25 +408,100 @@ class AnnoModTool(QMainWindow):
 
         return list(dict.fromkeys(str(path) for path in saved_paths if str(path).strip()))
 
+    def _load_xml_path_groups(self):
+        """Read the per-game XML folder lists, migrating the old flat list."""
+        groups = {key: [] for key, _label, _settings_key in XML_PATH_GROUPS}
+        stored_anything = False
+
+        for key, _label, settings_key in XML_PATH_GROUPS:
+            stored = self.settings.value(settings_key, [])
+            if isinstance(stored, str):
+                stored = [stored] if stored else []
+            elif stored is None:
+                stored = []
+            cleaned = [str(path).strip() for path in stored if str(path).strip()]
+            if cleaned:
+                stored_anything = True
+            groups[key] = list(dict.fromkeys(cleaned))
+
+        if not stored_anything:
+            # Migration from the single "Paths/xml_paths" list. Anything that
+            # mentions 1800 goes to Anno 1800, everything else to Anno 117.
+            for path in self._load_xml_paths():
+                key = "anno1800" if "1800" in path.lower() else "anno117"
+                groups[key].append(path)
+            for key in groups:
+                groups[key] = list(dict.fromkeys(groups[key]))
+
+        return groups
+
+    def _flat_xml_paths(self):
+        """All configured folders, Anno 117 first, without duplicates."""
+        paths = [path
+                 for key, _label, _settings_key in XML_PATH_GROUPS
+                 for path in self.xml_path_groups.get(key, [])]
+        return list(dict.fromkeys(paths))
+
+    def _current_xml_path_groups(self):
+        """Read the folder lists back from their list widgets."""
+        groups = {}
+        for key, _label, _settings_key in XML_PATH_GROUPS:
+            widget = self.list_xml_paths_by_group.get(key)
+            if widget is None:
+                groups[key] = list(self.xml_path_groups.get(key, []))
+                continue
+            paths = [widget.item(row).text().strip()
+                     for row in range(widget.count())
+                     if widget.item(row).text().strip()]
+            groups[key] = list(dict.fromkeys(paths))
+        return groups
+
+    @staticmethod
+    def _first_selectable_index(selector):
+        """First real path entry, skipping group headers and separators."""
+        model = selector.model()
+        for index in range(selector.count()):
+            item = model.item(index) if hasattr(model, "item") else None
+            if item is not None and not item.isEnabled():
+                continue
+            if selector.itemText(index).strip():
+                return index
+        return -1
+
+    def _populate_path_selector(self, selector):
+        """Fill a path combo box, grouped by game with disabled headers."""
+        selected_path = selector.currentText()
+        selector.blockSignals(True)
+        selector.clear()
+
+        for key, label, _settings_key in XML_PATH_GROUPS:
+            paths = self.xml_path_groups.get(key, [])
+            if not paths:
+                continue
+            if selector.count():
+                selector.insertSeparator(selector.count())
+            selector.addItem(label)
+            header = selector.model().item(selector.count() - 1)
+            if header is not None:
+                header.setEnabled(False)
+                header_font = header.font()
+                header_font.setBold(True)
+                header.setFont(header_font)
+            selector.addItems(paths)
+
+        index = selector.findText(selected_path) if selected_path else -1
+        selector.setCurrentIndex(index if index >= 0
+                                 else self._first_selectable_index(selector))
+        selector.blockSignals(False)
+
     def _save_xml_paths(self):
 
-        paths = [
-            self.list_xml_paths.item(row).text().strip()
-            for row in range(self.list_xml_paths.count())
-            if self.list_xml_paths.item(row).text().strip()
-        ]
-        paths = list(dict.fromkeys(paths))
-        self.xml_paths = paths
-        active_path = self.combo_xml_path.currentText()
-        self.block_signals = True
-        self.combo_xml_path.clear()
-        self.combo_xml_path.addItems(paths)
-        if active_path in paths:
-            self.combo_xml_path.setCurrentText(active_path)
-        elif paths:
-            self.combo_xml_path.setCurrentIndex(0)
-        self.block_signals = False
-        self.settings.setValue("Paths/xml_paths", paths)
+        self.xml_path_groups = self._current_xml_path_groups()
+        self.xml_paths = self._flat_xml_paths()
+        self._populate_path_selector(self.combo_xml_path)
+
+        for key, _label, settings_key in XML_PATH_GROUPS:
+            self.settings.setValue(settings_key, self.xml_path_groups[key])
         self.settings.setValue("Paths/xml_path", self.combo_xml_path.currentText())
         self._sync_guid_compare_paths()
 
@@ -427,15 +510,8 @@ class AnnoModTool(QMainWindow):
         if not hasattr(self, "compare_left_path"):
             return
 
-        paths = [self.combo_xml_path.itemText(index) for index in range(self.combo_xml_path.count())]
         for selector in (self.compare_left_path, self.compare_right_path):
-            selected_path = selector.currentText()
-            selector.blockSignals(True)
-            selector.clear()
-            selector.addItems(paths)
-            if selected_path in paths:
-                selector.setCurrentText(selected_path)
-            selector.blockSignals(False)
+            self._populate_path_selector(selector)
 
     def on_xml_path_changed(self, index):
 
@@ -446,18 +522,18 @@ class AnnoModTool(QMainWindow):
         if folder and os.path.exists(folder):
             self.start_loading(folder)
 
-    def remove_xml_path(self):
+    def remove_xml_path(self, group_key):
+        """Remove the selected folder from one game's XML folder list."""
+        widget = self.list_xml_paths_by_group.get(group_key)
+        if widget is None:
+            return
 
-        row = self.list_xml_paths.currentRow()
-        if row >= 0:
-            removed_path = self.list_xml_paths.item(row).text()
-            self.list_xml_paths.takeItem(row)
-            combo_index = self.combo_xml_path.findText(removed_path)
-            if combo_index >= 0:
-                self.combo_xml_path.removeItem(combo_index)
-            if self.combo_xml_path.count() and self.combo_xml_path.currentIndex() < 0:
-                self.combo_xml_path.setCurrentIndex(0)
-            self._sync_guid_compare_paths()
+        row = widget.currentRow()
+        if row < 0:
+            return
+
+        widget.takeItem(row)
+        self._save_xml_paths()
 
     def _load_buff_filter_tags(self):
 
@@ -716,7 +792,9 @@ class AnnoModTool(QMainWindow):
         config_path = os.path.join(base_dir, "config.ini")
         self.settings = QSettings(config_path, QSettings.Format.IniFormat)
 
-        self.xml_paths = self._load_xml_paths()
+        self.list_xml_paths_by_group = {}
+        self.xml_path_groups = self._load_xml_path_groups()
+        self.xml_paths = self._flat_xml_paths()
         saved_path = self.settings.value("Paths/xml_path", "")
         
         self.setStyleSheet("""
@@ -732,6 +810,14 @@ class AnnoModTool(QMainWindow):
             QTabWidget::pane { border: 1px solid #333; }
             QTabBar::tab { background: #252525; padding: 10px 20px; border: 1px solid #333; border-bottom: none; }
             QTabBar::tab:selected { background: #1e1e1e; border-bottom: 2px solid #1b5e20; }
+            QGroupBox {
+                border: 1px solid #333; border-radius: 4px;
+                margin-top: 10px; padding-top: 8px; font-weight: bold;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin; subcontrol-position: top left;
+                left: 8px; padding: 0 4px; color: #81c784;
+            }
         """)
 
         self.assets_db, self.templates_db, self.languages_db = {}, {}, {}
@@ -830,7 +916,7 @@ class AnnoModTool(QMainWindow):
 
         self.combo_xml_path = QComboBox()
         self.combo_xml_path.setFixedWidth(300)
-        self.combo_xml_path.addItems(self.xml_paths)
+        self._populate_path_selector(self.combo_xml_path)
         saved_path_index = self.combo_xml_path.findText(str(saved_path).strip())
         if saved_path_index >= 0:
             self.combo_xml_path.setCurrentIndex(saved_path_index)
@@ -1050,8 +1136,15 @@ class AnnoModTool(QMainWindow):
         self.guid_compare_tab = QWidget()
         self.tabs.addTab(self.guid_compare_tab, "GUID Compare")
         compare_layout = QVBoxLayout(self.guid_compare_tab)
+        compare_layout.setContentsMargins(6, 6, 6, 6)
+        compare_layout.setSpacing(6)
 
-        compare_search_row = QHBoxLayout()
+        # The toolbar lives in its own container so it can be pinned to the top
+        # with a fixed height. Every remaining pixel then goes to the panes.
+        compare_toolbar = QWidget()
+        compare_search_row = QHBoxLayout(compare_toolbar)
+        compare_search_row.setContentsMargins(0, 0, 0, 0)
+        compare_search_row.setSpacing(6)
         self.compare_watchlist = QComboBox()
         self.compare_watchlist.setMinimumWidth(260)
         self.compare_watchlist.setToolTip("Select a GUID from the watchlist")
@@ -1062,48 +1155,93 @@ class AnnoModTool(QMainWindow):
         compare_search_row.addWidget(self.compare_watchlist)
         compare_search_row.addWidget(self.compare_guid_input)
         compare_search_row.addWidget(self.btn_compare_guid)
-        compare_layout.addLayout(compare_search_row)
+
+        # Diff navigation + summary
+        self.btn_diff_prev = QPushButton("\u25c0 Prev diff")
+        self.btn_diff_next = QPushButton("Next diff \u25b6")
+        self.btn_diff_prev.setToolTip("Jump to the previous block of differences")
+        self.btn_diff_next.setToolTip("Jump to the next block of differences")
+        self.btn_diff_prev.setEnabled(False)
+        self.btn_diff_next.setEnabled(False)
+        self.cb_diff_ignore_ws = QCheckBox("Ignore whitespace")
+        self.cb_diff_ignore_ws.setChecked(True)
+        self.cb_diff_ignore_ws.setToolTip(
+            "Compare lines without leading/trailing whitespace, so pure\n"
+            "indentation changes are not reported as differences."
+        )
+        self.lbl_diff_stats = QLabel("")
+        self.lbl_diff_stats.setStyleSheet(
+            "color: #81c784; font-weight: bold; padding-left: 8px;"
+        )
+        compare_search_row.addWidget(self.btn_diff_prev)
+        compare_search_row.addWidget(self.btn_diff_next)
+        compare_search_row.addWidget(self.cb_diff_ignore_ws)
+        compare_search_row.addWidget(self.lbl_diff_stats)
+        compare_search_row.addStretch()
+
+        compare_toolbar.setSizePolicy(QSizePolicy.Policy.Preferred,
+                                      QSizePolicy.Policy.Fixed)
+        # Stretch 0: the row never grows beyond its own size hint.
+        compare_layout.addWidget(compare_toolbar, 0)
 
         compare_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.compare_left_path = QComboBox()
         self.compare_right_path = QComboBox()
-        self.compare_left_path.addItems(self.xml_paths)
-        self.compare_right_path.addItems(self.xml_paths)
-        self.compare_left_path.setCurrentText(self.combo_xml_path.currentText())
-        self.compare_right_path.setCurrentText(self.combo_xml_path.currentText())
+        for selector in (self.compare_left_path, self.compare_right_path):
+            self._populate_path_selector(selector)
+            selector.setCurrentText(self.combo_xml_path.currentText())
+        for selector in (self.compare_left_path, self.compare_right_path):
+            selector.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                   QSizePolicy.Policy.Fixed)
 
         left_compare_panel = QWidget()
         left_compare_layout = QVBoxLayout(left_compare_panel)
         left_compare_layout.setContentsMargins(0, 0, 0, 0)
-        left_compare_layout.addWidget(self.compare_left_path)
-        self.compare_left_xml = QTextEdit()
-        self.compare_left_xml.setReadOnly(True)
-        self.compare_left_xml.setPlainText("Enter a GUID to compare.")
-        left_compare_layout.addWidget(self.compare_left_xml)
+        left_compare_layout.setSpacing(2)
+        left_compare_layout.addWidget(self.compare_left_path, 0)
+        self.compare_left_xml = DiffPane()
+        self.compare_left_xml.set_message("Enter a GUID to compare.")
+        left_compare_layout.addWidget(self.compare_left_xml, 1)
 
         right_compare_panel = QWidget()
         right_compare_layout = QVBoxLayout(right_compare_panel)
         right_compare_layout.setContentsMargins(0, 0, 0, 0)
-        right_compare_layout.addWidget(self.compare_right_path)
-        self.compare_right_xml = QTextEdit()
-        self.compare_right_xml.setReadOnly(True)
-        self.compare_right_xml.setPlainText("Enter a GUID to compare.")
-        right_compare_layout.addWidget(self.compare_right_xml)
+        right_compare_layout.setSpacing(2)
+        right_compare_layout.addWidget(self.compare_right_path, 0)
+        self.compare_right_xml = DiffPane()
+        self.compare_right_xml.set_message("Enter a GUID to compare.")
+        right_compare_layout.addWidget(self.compare_right_xml, 1)
 
         compare_splitter.addWidget(left_compare_panel)
         compare_splitter.addWidget(right_compare_panel)
+        compare_splitter.setChildrenCollapsible(False)
+        compare_splitter.setHandleWidth(6)
+        # Keep both halves equal when the window is resized.
+        compare_splitter.setStretchFactor(0, 1)
+        compare_splitter.setStretchFactor(1, 1)
         compare_splitter.setSizes([600, 600])
-        compare_layout.addWidget(compare_splitter)
+        # Stretch 1: the splitter absorbs the whole remaining tab height.
+        compare_layout.addWidget(compare_splitter, 1)
+
+        # Both panes always hold the same number of rows, so a 1:1 scroll
+        # mapping keeps them aligned.
+        self._compare_sync = SyncScrollGroup(self.compare_left_xml,
+                                             self.compare_right_xml)
 
         self._guid_compare_request_id = 0
         self._guid_compare_workers = []
         self._guid_compare_results = {}
+        self._diff_blocks = []
+        self._diff_cursor = -1
         self._refresh_compare_watchlist()
         self.compare_watchlist.currentIndexChanged.connect(self._select_compare_watchlist_guid)
         self.compare_guid_input.returnPressed.connect(self.compare_guid)
         self.btn_compare_guid.clicked.connect(self.compare_guid)
         self.compare_left_path.currentIndexChanged.connect(lambda _index: self.compare_guid())
         self.compare_right_path.currentIndexChanged.connect(lambda _index: self.compare_guid())
+        self.btn_diff_prev.clicked.connect(lambda: self._step_diff(-1))
+        self.btn_diff_next.clicked.connect(lambda: self._step_diff(1))
+        self.cb_diff_ignore_ws.toggled.connect(self._rerender_guid_compare)
 
         # TAB 5: STRUKTUR BIBLIOTHEK ###################################################
 
@@ -1138,54 +1276,109 @@ class AnnoModTool(QMainWindow):
         self.settings_tab = QWidget()
         self.tabs.addTab(self.settings_tab, "Settings")
         set_layout = QVBoxLayout(self.settings_tab)
+        set_layout.setContentsMargins(6, 6, 6, 6)
 
-        path_group = QGroupBox("Path Configuration")
-        path_layout = QVBoxLayout(path_group)
+        # Settings are split into sub-tabs so each page stays short enough to
+        # be read without scrolling.
+        self.settings_tabs = QTabWidget()
+        # Flatter tabs than the main bar so the nesting is visually obvious.
+        self.settings_tabs.setStyleSheet("""
+            QTabBar::tab { padding: 6px 16px; font-weight: normal; }
+            QTabBar::tab:selected { border-bottom: 2px solid #81c784; }
+        """)
+        set_layout.addWidget(self.settings_tabs)
+
+        # --- SETTINGS > GENERAL ---------------------------------------------
+        self.settings_general_tab = QWidget()
+        self.settings_tabs.addTab(self.settings_general_tab, "General")
+        general_layout = QVBoxLayout(self.settings_general_tab)
+        general_layout.setContentsMargins(10, 10, 10, 10)
+        general_layout.setSpacing(10)
+
+        language_group = QGroupBox("Default Language")
+        language_group_layout = QHBoxLayout(language_group)
+        self.combo_default_lang = QComboBox()
+        self.combo_default_lang.setFixedWidth(140)
+        self.combo_default_lang.setToolTip(
+            "Language preselected in the toolbar when the application starts"
+        )
+        language_group_layout.addWidget(QLabel("Default Language:"))
+        language_group_layout.addWidget(self.combo_default_lang)
+        language_group_layout.addStretch()
+        general_layout.addWidget(language_group)
 
         game_folders_group = QGroupBox("Game Folders")
         game_folders_layout = QVBoxLayout(game_folders_group)
-        self.edit_anno117_folder = self._create_folder_setting_row(game_folders_layout, "Anno 117 Folder:", "Paths/anno117_folder", "Select Anno 117 root folder")
+        self.edit_anno117_folder = self._create_folder_setting_row(
+            game_folders_layout, "Anno 117 Game Folder:", "Paths/anno117_folder",
+            "Select Anno 117 root folder")
         self._add_extract_button(game_folders_layout, "Anno 117", self.edit_anno117_folder)
-        self.edit_anno1800_folder = self._create_folder_setting_row(game_folders_layout, "Anno 1800 Folder:", "Paths/anno1800_folder", "Select Anno 1800 root folder")
+        self.edit_anno1800_folder = self._create_folder_setting_row(
+            game_folders_layout, "Anno 1800 Game Folder:", "Paths/anno1800_folder",
+            "Select Anno 1800 root folder")
         self._add_extract_button(game_folders_layout, "Anno 1800", self.edit_anno1800_folder)
-        set_layout.addWidget(game_folders_group)
+        general_layout.addWidget(game_folders_group)
 
-        self.list_xml_paths = QListWidget()
-        self.list_xml_paths.addItems(self.xml_paths)
-        self.list_xml_paths.setMinimumHeight(120)
-        btn_browse = QPushButton("Browse...")
-        btn_browse.setFixedWidth(80)
-        btn_browse.clicked.connect(self.browse_path_settings)
-        self.btn_remove_xml_path = QPushButton("Remove Selected")
-        self.btn_remove_xml_path.clicked.connect(self.remove_xml_path)
+        self.btn_save = QPushButton("Save Settings")
+        self.btn_save.setFixedWidth(200)
+        self.btn_save.setToolTip("Save all settings from every tab")
+        self.btn_save.clicked.connect(self.save_settings)
+        general_layout.addWidget(self.btn_save)
+        general_layout.addStretch()
 
-        path_layout.addWidget(self.list_xml_paths)
-        path_buttons_layout = QHBoxLayout()
-        path_buttons_layout.addWidget(btn_browse)
-        path_buttons_layout.addWidget(self.btn_remove_xml_path)
-        path_buttons_layout.addStretch()
-        path_layout.addLayout(path_buttons_layout)
+        # --- SETTINGS > XML SETTINGS ----------------------------------------
+        self.settings_xml_tab = QWidget()
+        self.settings_tabs.addTab(self.settings_xml_tab, "XML Settings")
+        xml_settings_layout = QVBoxLayout(self.settings_xml_tab)
+        xml_settings_layout.setContentsMargins(10, 10, 10, 10)
+        xml_settings_layout.setSpacing(10)
 
-        set_layout.addWidget(QLabel("Base folder for XML files:"))
-        set_layout.addWidget(path_group)
+        # One folder list per game, each with its own Browse/Remove buttons.
+        self.list_xml_paths_by_group = {}
+        for group_key, group_label, _settings_key in XML_PATH_GROUPS:
+            path_group = QGroupBox(group_label)
+            path_layout = QVBoxLayout(path_group)
 
-        lang_layout = QHBoxLayout()
-        self.combo_default_lang = QComboBox()
-        self.combo_default_lang.setFixedWidth(140)
+            path_list = QListWidget()
+            path_list.addItems(self.xml_path_groups.get(group_key, []))
+            path_list.setMinimumHeight(90)
+            path_list.setToolTip(
+                f"Extracted XML folders used as {group_label}.\n"
+                "They appear grouped in the folder selector of the toolbar."
+            )
+            path_layout.addWidget(path_list)
 
-        lang_layout.addWidget(QLabel("Default Language:"))
-        lang_layout.addWidget(self.combo_default_lang)
-        lang_layout.addStretch()
-        set_layout.addLayout(lang_layout)
+            path_buttons_layout = QHBoxLayout()
+            btn_browse = QPushButton("Browse...")
+            btn_browse.setFixedWidth(80)
+            btn_browse.clicked.connect(
+                lambda _checked=False, key=group_key: self.browse_path_settings(key)
+            )
+            btn_remove = QPushButton("Remove Selected")
+            btn_remove.clicked.connect(
+                lambda _checked=False, key=group_key: self.remove_xml_path(key)
+            )
+            path_buttons_layout.addWidget(btn_browse)
+            path_buttons_layout.addWidget(btn_remove)
+            path_buttons_layout.addStretch()
+            path_layout.addLayout(path_buttons_layout)
 
-        set_layout.addWidget(QLabel("Buff/Effect XML tags:"))
+            self.list_xml_paths_by_group[group_key] = path_list
+            xml_settings_layout.addWidget(path_group)
+
+        buff_tags_group = QGroupBox("Buff/Effect XML tags")
+        buff_tags_layout = QVBoxLayout(buff_tags_group)
         self.list_buff_filter_tags = QListWidget()
         self.list_buff_filter_tags.setMinimumHeight(180)
+        self.list_buff_filter_tags.setToolTip(
+            "XML tags scanned for linked assets in the Buffs/Effects pane.\n"
+            "Double-click an entry to rename it."
+        )
         for tag in self._buff_filter_tags:
             item = QListWidgetItem(tag)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
             self.list_buff_filter_tags.addItem(item)
-        set_layout.addWidget(self.list_buff_filter_tags)
+        buff_tags_layout.addWidget(self.list_buff_filter_tags)
 
         tag_buttons_layout = QHBoxLayout()
         self.btn_add_buff_tag = QPushButton("Add Tag")
@@ -1195,14 +1388,16 @@ class AnnoModTool(QMainWindow):
         tag_buttons_layout.addWidget(self.btn_add_buff_tag)
         tag_buttons_layout.addWidget(self.btn_remove_buff_tag)
         tag_buttons_layout.addStretch()
-        set_layout.addLayout(tag_buttons_layout)
+        buff_tags_layout.addLayout(tag_buttons_layout)
+        xml_settings_layout.addWidget(buff_tags_group)
 
-        self.btn_save = QPushButton("Save Settings")
-        self.btn_save.setFixedWidth(200)
-        self.btn_save.clicked.connect(self.save_settings)
-
-        set_layout.addWidget(self.btn_save)
-        set_layout.addStretch()
+        # A second save button so the XML page does not force a tab switch.
+        self.btn_save_xml = QPushButton("Save Settings")
+        self.btn_save_xml.setFixedWidth(200)
+        self.btn_save_xml.setToolTip("Save all settings from every tab")
+        self.btn_save_xml.clicked.connect(self.save_settings)
+        xml_settings_layout.addWidget(self.btn_save_xml)
+        xml_settings_layout.addStretch()
 
         # SIGNALS ######################################################################
 
@@ -1229,14 +1424,16 @@ class AnnoModTool(QMainWindow):
             self.xml_editor, 
             self.lib_preview, 
             self.templates_preview,
-            self.compare_left_xml,
-            self.compare_right_xml,
             self.buff_view,
             self.debug_console
         ]
 
         # Highlighter müssen referenziert bleiben, um Garbage Collection zu verhindern.
         self.highlighters = []
+
+        # DiffPane instances style themselves but still want XML highlighting.
+        for view in (self.compare_left_xml, self.compare_right_xml):
+            self.highlighters.append(XMLHighlighter(view.document()))
 
         for view in self.xml_views:
             view.setFont(code_font)
@@ -1268,64 +1465,105 @@ class AnnoModTool(QMainWindow):
         self._guid_compare_request_id += 1
         request_id = self._guid_compare_request_id
         self._guid_compare_results = {}
+        self._diff_blocks = []
+        self._diff_cursor = -1
+        self.lbl_diff_stats.setText("")
+        self.btn_diff_prev.setEnabled(False)
+        self.btn_diff_next.setEnabled(False)
+
+        # Ask searches from a previous request to stop so they do not keep
+        # scanning large XML files in the background.
+        for running in self._guid_compare_workers:
+            running.requestInterruption()
 
         if not guid:
-            self.compare_left_xml.setPlainText("Enter a GUID to compare.")
-            self.compare_right_xml.setPlainText("Enter a GUID to compare.")
+            self.compare_left_xml.set_message("Enter a GUID to compare.")
+            self.compare_right_xml.set_message("Enter a GUID to compare.")
             return
 
         for side, folder, preview in (
             ("left", self.compare_left_path.currentText(), self.compare_left_xml),
             ("right", self.compare_right_path.currentText(), self.compare_right_xml),
         ):
-            preview.setPlainText(f"Searching for GUID {guid}...")
-            preview.setExtraSelections([])
+            preview.set_message(f"Searching for GUID {guid}...")
             worker = GuidCompareLoader(request_id, folder, guid, self)
-            worker.finished.connect(
+
+            # The search result arrives on `result`. `finished` is QThread's own
+            # signal and is emitted only after run() has returned, so cleanup
+            # must be tied to it - otherwise the thread object is destroyed
+            # while it is still running.
+            worker.result.connect(
                 lambda result_id, _folder, content, compare_side=side, target=preview:
                 self._show_guid_compare_result(result_id, compare_side, content, target)
             )
-            worker.finished.connect(worker.deleteLater)
+            worker.log.connect(lambda _id, message: self.append_debug_log(message))
             worker.finished.connect(
-                lambda *_args, worker=worker: self._guid_compare_workers.remove(worker)
-                if worker in self._guid_compare_workers else None
+                lambda worker=worker: self._retire_guid_compare_worker(worker)
             )
             self._guid_compare_workers.append(worker)
             worker.start()
 
+    def _retire_guid_compare_worker(self, worker):
+        """Drop a finished worker. Only ever called from QThread.finished,
+        i.e. after run() has returned, so deleteLater() is safe here."""
+        if worker in self._guid_compare_workers:
+            self._guid_compare_workers.remove(worker)
+        worker.deleteLater()
+
     def _show_guid_compare_result(self, request_id, side, content, preview):
-        if request_id == self._guid_compare_request_id:
-            preview.setPlainText(content)
-            self._guid_compare_results[side] = content
-            if len(self._guid_compare_results) == 2:
-                self._highlight_guid_compare_differences()
-
-    def _highlight_guid_compare_differences(self):
-        left_lines, right_lines = differing_line_numbers(
-            self._guid_compare_results["left"], self._guid_compare_results["right"]
-        )
-        self._set_compare_line_highlights(self.compare_left_xml, left_lines, QColor("#5a3030"))
-        self._set_compare_line_highlights(self.compare_right_xml, right_lines, QColor("#303f5a"))
-
-    @staticmethod
-    def _set_compare_line_highlights(preview, line_numbers, color):
-        if not line_numbers:
-            preview.setExtraSelections([])
+        """Collect one side of the comparison; render once both have arrived."""
+        if request_id != self._guid_compare_request_id:
             return
 
-        selections = []
-        doc = preview.document()
-        for line_number in line_numbers:
-            block = doc.findBlockByNumber(line_number)
-            if not block.isValid():
-                continue
-            selection = QTextEdit.ExtraSelection()
-            selection.cursor = QTextCursor(block)
-            selection.cursor.select(QTextCursor.SelectionType.LineUnderCursor)
-            selection.format.setBackground(color)
-            selection.format.setProperty(QTextCharFormat.Property.FullWidthSelection, True)
-            selections.append(selection)
-        preview.setExtraSelections(selections)
+        self._guid_compare_results[side] = content
+        if len(self._guid_compare_results) == 2:
+            self._highlight_guid_compare_differences()
+        else:
+            # Show the finished side right away; the diff replaces it later.
+            preview.set_message(content)
+
+    def _rerender_guid_compare(self):
+        """Re-run the diff, e.g. after the whitespace option was toggled."""
+        if len(self._guid_compare_results) == 2:
+            self._highlight_guid_compare_differences()
+
+    def _highlight_guid_compare_differences(self):
+        stats = set_diff_texts(
+            self.compare_left_xml,
+            self.compare_right_xml,
+            self._guid_compare_results["left"],
+            self._guid_compare_results["right"],
+            ignore_whitespace=self.cb_diff_ignore_ws.isChecked(),
+        )
+        self.lbl_diff_stats.setText(format_stats(stats))
+        self._diff_blocks = self._collect_diff_blocks()
+        self._diff_cursor = -1
+        self.btn_diff_prev.setEnabled(bool(self._diff_blocks))
+        self.btn_diff_next.setEnabled(bool(self._diff_blocks))
+
+    def _collect_diff_blocks(self):
+        """Group consecutive changed rows so navigation jumps block by block."""
+        changed = sorted(set(self.compare_left_xml.change_rows())
+                         | set(self.compare_right_xml.change_rows()))
+        if not changed:
+            return []
+        blocks = [changed[0]]
+        blocks.extend(current for previous, current in zip(changed, changed[1:])
+                      if current != previous + 1)
+        return blocks
+
+    def _step_diff(self, direction):
+        """Scroll both panes to the previous/next block of differences."""
+        if not self._diff_blocks:
+            self.statusBar().showMessage("No differences to navigate", 2000)
+            return
+        self._diff_cursor = (self._diff_cursor + direction) % len(self._diff_blocks)
+        row = self._diff_blocks[self._diff_cursor]
+        self.compare_left_xml.goto_row(row)
+        self.compare_right_xml.goto_row(row)
+        self.statusBar().showMessage(
+            f"Difference {self._diff_cursor + 1} of {len(self._diff_blocks)}", 3000
+        )
 
     def _start_version_check(self):
         self._version_check_worker = VersionCheckWorker(self.app_version, self)
@@ -1369,18 +1607,26 @@ class AnnoModTool(QMainWindow):
 
         return ""
 
-    def browse_path_settings(self):
+    def browse_path_settings(self, group_key):
+        """Add an XML base folder to one game's folder list."""
+        widget = self.list_xml_paths_by_group.get(group_key)
+        if widget is None:
+            return
 
-        folder = QFileDialog.getExistingDirectory(self, "Select XML base folder")
+        label = next((group_label for key, group_label, _settings_key in XML_PATH_GROUPS
+                      if key == group_key), "XML")
+        folder = QFileDialog.getExistingDirectory(self, f"Select base folder for {label}")
+        if not folder:
+            return
 
-        if folder:
-            existing_paths = [self.list_xml_paths.item(row).text() for row in range(self.list_xml_paths.count())]
-            if folder not in existing_paths:
-                self.list_xml_paths.addItem(folder)
-            if self.combo_xml_path.findText(folder) == -1:
-                self.combo_xml_path.addItem(folder)
-            self.combo_xml_path.setCurrentText(folder)
-            self._sync_guid_compare_paths()
+        existing = [widget.item(row).text() for row in range(widget.count())]
+        if folder not in existing:
+            widget.addItem(folder)
+
+        self._save_xml_paths()
+        index = self.combo_xml_path.findText(folder)
+        if index >= 0:
+            self.combo_xml_path.setCurrentIndex(index)
 
     def _create_folder_setting_row(self, parent_layout, label_text, settings_key, dialog_title):
         row=QHBoxLayout()
@@ -1504,9 +1750,10 @@ class AnnoModTool(QMainWindow):
 
     def save_settings(self):
 
-        paths = [self.list_xml_paths.item(row).text().strip() for row in range(self.list_xml_paths.count())]
-        paths = list(dict.fromkeys(path for path in paths if path))
-        self.xml_paths = paths
+        self.xml_path_groups = self._current_xml_path_groups()
+        self.xml_paths = self._flat_xml_paths()
+        self._populate_path_selector(self.combo_xml_path)
+        self._sync_guid_compare_paths()
         lang = self.combo_default_lang.currentText()
         tags = sorted(set(
             self.list_buff_filter_tags.item(row).text().strip()
@@ -1525,7 +1772,8 @@ class AnnoModTool(QMainWindow):
         self._buff_filter_tags = tags
         self._buff_filter_selected = set(tags)
 
-        self.settings.setValue("Paths/xml_paths", paths)
+        for group_key, _group_label, group_settings_key in XML_PATH_GROUPS:
+            self.settings.setValue(group_settings_key, self.xml_path_groups[group_key])
         self.settings.setValue("Paths/xml_path", self.combo_xml_path.currentText())
         self.settings.setValue("Paths/default_lang", lang)
         self.settings.setValue("Paths/anno117_folder", self.edit_anno117_folder.text().strip())
@@ -1571,10 +1819,18 @@ class AnnoModTool(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "Select folder")
 
         if folder:
-            if self.combo_xml_path.findText(folder) == -1:
-                self.combo_xml_path.addItem(folder)
-            self.combo_xml_path.setCurrentText(folder)
+            # Folders must belong to a game group, otherwise _save_xml_paths()
+            # would rebuild the selector without them.
+            group_key = "anno1800" if "1800" in folder.lower() else "anno117"
+            widget = self.list_xml_paths_by_group.get(group_key)
+            if widget is not None:
+                existing = [widget.item(row).text() for row in range(widget.count())]
+                if folder not in existing:
+                    widget.addItem(folder)
             self._save_xml_paths()
+            index = self.combo_xml_path.findText(folder)
+            if index >= 0:
+                self.combo_xml_path.setCurrentIndex(index)
             self.start_loading(folder)
 
     def on_data_ready(self, a, t, langs, cat_list, t_lib, v_cat):
@@ -2102,6 +2358,15 @@ class AnnoModTool(QMainWindow):
                     export_recursive(vals)
                 
             QMessageBox.information(self, "Info", f"Asset (GUID {guid}) including linked Buffs/Effects exported successfully!")
+
+
+    def closeEvent(self, event):
+        """Let background GUID searches finish before the window is destroyed."""
+        for worker in list(self._guid_compare_workers):
+            worker.requestInterruption()
+        for worker in list(self._guid_compare_workers):
+            worker.wait(3000)
+        super().closeEvent(event)
 
 
 if __name__ == "__main__":

@@ -15,7 +15,8 @@ dist/
 # Environments
 .venv/
 
-# Personal Config
+# Personal Config / folders
+backup/
 config.ini
 auto-exe-to-py.json
 *copy*
