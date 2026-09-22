@@ -1,2 +1,2 @@
 PyQt6
-pyinstaller
+qt-themes>=0.4.0   # optional: extra colour schemes for the theme selector

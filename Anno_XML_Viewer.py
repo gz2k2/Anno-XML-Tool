@@ -10,6 +10,8 @@ from rda_extractor import (NET_CONSOLE_EXIT_CODE, extract_gamefiles as run_rda_e
 from guid_compare import GuidCompareLoader
 from guid_diff_view import (DiffPane, SyncScrollGroup, set_diff_texts,
                             format_stats)
+import guid_diff_view
+import theme_manager
 from datetime import datetime
 import xml.etree.ElementTree as ET
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
@@ -18,7 +20,8 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QSplitter, QMessageBox, QTreeWidget, QTreeWidgetItem, 
                              QMenu, QDialog, QListWidget, QListWidgetItem, 
                              QDialogButtonBox, QComboBox, QTabWidget, QGroupBox,
-                             QCheckBox, QProgressDialog, QSizePolicy)
+                             QCheckBox, QProgressDialog, QSizePolicy,
+                             QListView, QStyledItemDelegate)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSettings, QUrl, QTimer
 from PyQt6.QtGui import (QSyntaxHighlighter, QTextCharFormat, QColor, QFont, QAction,
                          QPixmap, QIcon, QTextCursor)
@@ -591,11 +594,11 @@ class AnnoModTool(QMainWindow):
         layout = QVBoxLayout(dlg)
 
         info_lbl = QLabel("Select/Deselect Templates")
-        info_lbl.setStyleSheet("font-weight: bold; color: #81c784;")
+        info_lbl.setProperty("accentText", True)
         layout.addWidget(info_lbl)
 
         search_lbl = QLabel("Search")
-        search_lbl.setStyleSheet("font-weight: bold; color: #81c784;")
+        search_lbl.setProperty("accentText", True)
         layout.addWidget(search_lbl)
 
         search_input = QLineEdit()
@@ -703,7 +706,7 @@ class AnnoModTool(QMainWindow):
         layout = QVBoxLayout(dlg)
 
         info_lbl = QLabel("Select/Deselect categories")
-        info_lbl.setStyleSheet("font-weight: bold; color: #81c784;")
+        info_lbl.setProperty("accentText", True)
         layout.addWidget(info_lbl)
 
         table = QTableWidget(0, 2)
@@ -797,28 +800,10 @@ class AnnoModTool(QMainWindow):
         self.xml_paths = self._flat_xml_paths()
         saved_path = self.settings.value("Paths/xml_path", "")
         
-        self.setStyleSheet("""
-            QMainWindow, QWidget { background-color: #121212; color: #e0e0e0; font-family: 'Segoe UI', sans-serif; }
-            QTableWidget, QTreeWidget, QTextEdit, QListWidget { 
-                background-color: #1e1e1e; border: 1px solid #333; gridline-color: #333; border-radius: 4px; 
-            }
-            QHeaderView::section { background-color: #252525; padding: 4px; border: 1px solid #333; }
-            QTableCornerButton::section { background-color: #252525; border: 1px solid #333; }
-            QPushButton { background-color: #333; border: 1px solid #444; padding: 6px; border-radius: 4px; }
-            QPushButton:hover { background-color: #444; }
-            QLineEdit, QComboBox { background-color: #1e1e1e; border: 1px solid #444; padding: 4px; color: white; }
-            QTabWidget::pane { border: 1px solid #333; }
-            QTabBar::tab { background: #252525; padding: 10px 20px; border: 1px solid #333; border-bottom: none; }
-            QTabBar::tab:selected { background: #1e1e1e; border-bottom: 2px solid #1b5e20; }
-            QGroupBox {
-                border: 1px solid #333; border-radius: 4px;
-                margin-top: 10px; padding-top: 8px; font-weight: bold;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin; subcontrol-position: top left;
-                left: 8px; padding: 0 4px; color: #81c784;
-            }
-        """)
+        self.current_theme = str(
+            self.settings.value("UI/theme", theme_manager.ANNO_DARK) or theme_manager.ANNO_DARK
+        )
+        self.current_theme = self.apply_theme(self.current_theme)
 
         self.assets_db, self.templates_db, self.languages_db = {}, {}, {}
         self.template_library = {}
@@ -846,13 +831,14 @@ class AnnoModTool(QMainWindow):
         # Template-Filter (statt Combobox: Button + Popup)
         self.btn_template_filter = QPushButton("Template Filter...")
         self.lbl_filter = QLabel("Search-Filter")
-        self.lbl_filter.setStyleSheet("color: #81c784; font-weight: bold; padding-left: 8px;")
+        self.lbl_filter.setProperty("accentText", True)
         self.cb_search_main_only = QCheckBox("Search only GUID Text")
-        self.cb_search_main_only.setStyleSheet("""
-            QCheckBox { font-size: 10px; color: white; padding-left: 8px; }
-            QCheckBox::indicator { border: 1px solid #555; width: 12px; height: 12px; background: #1e1e1e; }
-            QCheckBox::indicator:checked { background-color: #81c784; border: 1px solid #81c784; }
-        """)
+        # Only the label is styled. Sizing QCheckBox::indicator would hand the
+        # indicator over to the stylesheet engine, which then draws nothing
+        # because no check mark image is supplied.
+        self.cb_search_main_only.setStyleSheet(
+            "QCheckBox { font-size: 10px; padding-left: 8px; }"
+        )
         self.cb_search_main_only.setToolTip("When checked, search is limited to GUID, Display Name, and Template.\nWhen unchecked, all text content within the asset is searched.")
         self.cb_search_main_only.setChecked(True)
         self.btn_template_filter.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -861,11 +847,18 @@ class AnnoModTool(QMainWindow):
         self._buff_filter_selected = set(self._buff_filter_tags)
         self.btn_buff_filter = QPushButton("Filter…")
         self.lbl_buff_filter = QLabel("Buffs/Effects")
-        self.lbl_buff_filter.setStyleSheet("color: #81c784; font-weight: bold; padding-left: 8px;")
+        self.lbl_buff_filter.setProperty("accentText", True)
         self.btn_buff_filter.setCursor(Qt.CursorShape.PointingHandCursor)
 
         self.btn_export = QPushButton("EXPORT XML")
-        self.btn_export.setStyleSheet("background-color: #1b5e20; color: white; font-weight: bold; padding: 4px 15px;")
+        # Explicit call-to-action colour; kept identical across all themes.
+        self.btn_export.setStyleSheet(
+            "QPushButton { background-color: #1b5e20; color: white;"
+            " font-weight: bold; padding: 6px 15px;"
+            " border: 1px solid #2e7d32; border-radius: 4px; }"
+            "QPushButton:hover { background-color: #2e7d32; }"
+            "QPushButton:pressed { background-color: #164a1a; }"
+        )
         
         export_columns_layout = QHBoxLayout()
 
@@ -983,7 +976,7 @@ class AnnoModTool(QMainWindow):
         rev_layout.setContentsMargins(0, 0, 0, 0)
         rev_layout.setSpacing(0)
         rev_header = QLabel(" REFERENCES")
-        rev_header.setStyleSheet("background-color: #252525; padding: 4px; font-weight: bold; border: 1px solid #333; color: #81c784;")
+        rev_header.setProperty("sectionHeader", True)
         self.reverse_search_table = QTableWidget(0, 3)
         self.reverse_search_table.setHorizontalHeaderLabels(["GUID", "Display Name", "Template"])
         self.reverse_search_table.verticalHeader().setVisible(False)
@@ -1018,7 +1011,7 @@ class AnnoModTool(QMainWindow):
         watch_header_layout.setSpacing(4)
 
         watch_header = QLabel(" WATCHLIST")
-        watch_header.setStyleSheet("background-color: #252525; padding: 4px; font-weight: bold; border: 1px solid #333; color: #81c784;")
+        watch_header.setProperty("sectionHeader", True)
 
         self.btn_watch_add = QPushButton("+")
         self.btn_watch_add.setFixedWidth(28)
@@ -1067,13 +1060,7 @@ class AnnoModTool(QMainWindow):
         xml_layout.setSpacing(0)
 
         xml_header = QLabel(" XML")
-        xml_header.setStyleSheet("""
-            background-color: #252525; 
-            padding: 4px; 
-            font-weight: bold; 
-            border: 1px solid #333; 
-            color: #81c784;
-        """)
+        xml_header.setProperty("sectionHeader", True)
         
         self.xml_editor = QTextEdit()
         self.xml_editor.setReadOnly(True)
@@ -1089,7 +1076,7 @@ class AnnoModTool(QMainWindow):
         buff_layout.setSpacing(0)
 
         buff_header = QLabel(" BUFFS / EFFECTS")
-        buff_header.setStyleSheet("background-color: #252525; padding: 4px; font-weight: bold; border: 1px solid #333; color: #81c784;")
+        buff_header.setProperty("sectionHeader", True)
         
         self.buff_view = QTextEdit()
         self.buff_view.setReadOnly(True)
@@ -1170,9 +1157,7 @@ class AnnoModTool(QMainWindow):
             "indentation changes are not reported as differences."
         )
         self.lbl_diff_stats = QLabel("")
-        self.lbl_diff_stats.setStyleSheet(
-            "color: #81c784; font-weight: bold; padding-left: 8px;"
-        )
+        self.lbl_diff_stats.setProperty("accentText", True)
         compare_search_row.addWidget(self.btn_diff_prev)
         compare_search_row.addWidget(self.btn_diff_next)
         compare_search_row.addWidget(self.cb_diff_ignore_ws)
@@ -1282,10 +1267,8 @@ class AnnoModTool(QMainWindow):
         # be read without scrolling.
         self.settings_tabs = QTabWidget()
         # Flatter tabs than the main bar so the nesting is visually obvious.
-        self.settings_tabs.setStyleSheet("""
-            QTabBar::tab { padding: 6px 16px; font-weight: normal; }
-            QTabBar::tab:selected { border-bottom: 2px solid #81c784; }
-        """)
+        # Flatter than the main tab bar; the accent is set by apply_theme().
+        self.settings_tabs.setStyleSheet(self._settings_tab_stylesheet())
         set_layout.addWidget(self.settings_tabs)
 
         # --- SETTINGS > GENERAL ---------------------------------------------
@@ -1294,6 +1277,31 @@ class AnnoModTool(QMainWindow):
         general_layout = QVBoxLayout(self.settings_general_tab)
         general_layout.setContentsMargins(10, 10, 10, 10)
         general_layout.setSpacing(10)
+
+        appearance_group = QGroupBox("Appearance")
+        appearance_layout = QHBoxLayout(appearance_group)
+        self.combo_theme = QComboBox()
+        self.combo_theme.setMinimumWidth(220)
+        for theme_key, theme_label in theme_manager.list_themes():
+            self.combo_theme.addItem(theme_label, theme_key)
+        theme_index = self.combo_theme.findData(self.current_theme)
+        if theme_index >= 0:
+            self.combo_theme.setCurrentIndex(theme_index)
+        self.combo_theme.setToolTip(
+            "Colour scheme of the application.\n"
+            "Additional themes require the optional 'qt-themes' package."
+        )
+        self.combo_theme.currentIndexChanged.connect(self._on_theme_selected)
+        appearance_layout.addWidget(QLabel("Theme:"))
+        appearance_layout.addWidget(self.combo_theme)
+        # unavailable_reason() also covers "installed but no theme files found",
+        # which is what a build without --collect-data qt_themes looks like.
+        if theme_manager.unavailable_reason():
+            hint = QLabel(theme_manager.unavailable_reason())
+            hint.setEnabled(False)
+            hint.setWordWrap(True)
+            appearance_layout.addWidget(hint, 1)
+        appearance_layout.addStretch()
 
         language_group = QGroupBox("Default Language")
         language_group_layout = QHBoxLayout(language_group)
@@ -1306,15 +1314,16 @@ class AnnoModTool(QMainWindow):
         language_group_layout.addWidget(self.combo_default_lang)
         language_group_layout.addStretch()
         general_layout.addWidget(language_group)
+        general_layout.addWidget(appearance_group)
 
         game_folders_group = QGroupBox("Game Folders")
         game_folders_layout = QVBoxLayout(game_folders_group)
         self.edit_anno117_folder = self._create_folder_setting_row(
-            game_folders_layout, "Anno 117 Game Folder:", "Paths/anno117_folder",
+            game_folders_layout, "Anno 117 Folder:", "Paths/anno117_folder",
             "Select Anno 117 root folder")
         self._add_extract_button(game_folders_layout, "Anno 117", self.edit_anno117_folder)
         self.edit_anno1800_folder = self._create_folder_setting_row(
-            game_folders_layout, "Anno 1800 Game Folder:", "Paths/anno1800_folder",
+            game_folders_layout, "Anno 1800 Folder:", "Paths/anno1800_folder",
             "Select Anno 1800 root folder")
         self._add_extract_button(game_folders_layout, "Anno 1800", self.edit_anno1800_folder)
         general_layout.addWidget(game_folders_group)
@@ -1440,20 +1449,19 @@ class AnnoModTool(QMainWindow):
             view.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
             
             # Wir setzen das Stylesheet spezifisch für dieses Objekt
-            view.setStyleSheet("""
-                background-color: #1e1e1e; 
-                color: #d4d4d4; 
-                border: 1px solid #333;
-                selection-background-color: #264f78;
-            """)
+            view.setStyleSheet(self._code_view_stylesheet())
             
             if view != self.debug_console:
                 highlighter = XMLHighlighter(view.document())
                 self.highlighters.append(highlighter)
 
+        self.append_debug_log(f"[theme] {theme_manager.diagnostics()}")
+
         active_path = self.combo_xml_path.currentText()
         if active_path and os.path.exists(active_path):
             self.start_loading(active_path)
+
+        self._prepare_combo_popups()
 
         QTimer.singleShot(0, self._start_version_check)
 
@@ -1563,6 +1571,119 @@ class AnnoModTool(QMainWindow):
         self.compare_right_xml.goto_row(row)
         self.statusBar().showMessage(
             f"Difference {self._diff_cursor + 1} of {len(self._diff_blocks)}", 3000
+        )
+
+    def _prepare_combo_popups(self):
+        """Make every combo box popup honour the stylesheet.
+
+        A non-editable QComboBox uses an internal item delegate that ignores
+        `QComboBox QAbstractItemView::item` rules, so popup entries keep the
+        default colours and the disabled group headers are indistinguishable
+        from normal paths. Giving each combo an explicit QListView plus a
+        QStyledItemDelegate restores stylesheet rendering.
+        """
+        for combo in self.findChildren(QComboBox):
+            if combo.property("styledPopup"):
+                continue
+            view = QListView(combo)
+            view.setUniformItemSizes(True)
+            combo.setView(view)
+            combo.setItemDelegate(QStyledItemDelegate(combo))
+            combo.setProperty("styledPopup", True)
+
+    def _settings_tab_stylesheet(self):
+        """Stylesheet for the nested Settings tabs.
+
+        A QTabBar::tab rule that only sets padding would switch the tab bar to
+        stylesheet rendering and drop its background, so the tab has to be
+        described completely.
+        """
+        accent = theme_manager.editor_colors(self.current_theme)["accent"].name()
+        if self.current_theme == theme_manager.ANNO_DARK:
+            base, selected, border = "#252525", "#1e1e1e", "#333"
+        else:
+            base, selected, border = ("palette(window)", "palette(base)",
+                                      "palette(mid)")
+        return (
+            f"QTabBar::tab {{ background: {base}; color: palette(text);"
+            f" border: 1px solid {border}; border-bottom: none;"
+            f" padding: 6px 16px; font-weight: normal; }}"
+            f"QTabBar::tab:selected {{ background: {selected};"
+            f" border-bottom: 2px solid {accent}; }}"
+        )
+
+    def _code_view_stylesheet(self):
+        """Stylesheet for the read-only XML views, derived from the theme."""
+        colors = theme_manager.editor_colors(self.current_theme)
+        background = colors["background"]
+        foreground = colors["text"]
+        border = QColor(
+            (background.red() + foreground.red()) // 4 + background.red() // 2,
+            (background.green() + foreground.green()) // 4 + background.green() // 2,
+            (background.blue() + foreground.blue()) // 4 + background.blue() // 2,
+        )
+        return (f"background-color: {background.name()};"
+                f" color: {foreground.name()};"
+                f" border: 1px solid {border.name()};"
+                f" selection-background-color: #264f78;")
+
+    def _tree_colors(self):
+        """Property-tree colours, darkened on light themes for readability."""
+        cached = getattr(self, "_tree_color_cache", None)
+        if cached and cached[0] == self.current_theme:
+            return cached[1]
+
+        background = theme_manager.editor_colors(self.current_theme)["background"]
+        if theme_manager.is_dark(background):
+            colors = {"group": QColor("#81c784"), "value": QColor("#64b5f6"),
+                      "name": QColor("#ffd54f")}
+        else:
+            colors = {"group": QColor("#2e7d32"), "value": QColor("#1565c0"),
+                      "name": QColor("#b26a00")}
+        self._tree_color_cache = (self.current_theme, colors)
+        return colors
+
+    def apply_theme(self, theme_key):
+        """Apply a theme to the window, the code views and the diff panes."""
+        applied = theme_manager.apply_theme(self, theme_key)
+        self.current_theme = applied
+
+        colors = theme_manager.editor_colors(applied)
+        guid_diff_view.apply_theme_colors(colors["background"], colors["text"])
+
+        for pane in (getattr(self, "compare_left_xml", None),
+                     getattr(self, "compare_right_xml", None)):
+            if pane is not None:
+                pane.refresh_theme()
+
+        stylesheet = self._code_view_stylesheet()
+        for view in getattr(self, "xml_views", []):
+            view.setStyleSheet(stylesheet)
+
+        self._tree_color_cache = None
+        if getattr(self, "settings_tabs", None) is not None:
+            self.settings_tabs.setStyleSheet(self._settings_tab_stylesheet())
+        if getattr(self, "current_xml_root", None) is not None:
+            self.refresh_ui_from_xml()
+
+        # Re-rendering picks up the new diff colours.
+        if len(getattr(self, "_guid_compare_results", {})) == 2:
+            self._highlight_guid_compare_differences()
+
+        return applied
+
+    def _on_theme_selected(self, index):
+        """Live-switch the theme when the user picks one in the settings."""
+        if self.block_signals or index < 0:
+            return
+        theme_key = self.combo_theme.itemData(index)
+        if not theme_key:
+            return
+        self.apply_theme(theme_key)
+        self.settings.setValue("UI/theme", self.current_theme)
+        self.settings.sync()
+        self.statusBar().showMessage(
+            f"Theme applied: {self.combo_theme.currentText()}", 3000
         )
 
     def _start_version_check(self):
@@ -1776,6 +1897,7 @@ class AnnoModTool(QMainWindow):
             self.settings.setValue(group_settings_key, self.xml_path_groups[group_key])
         self.settings.setValue("Paths/xml_path", self.combo_xml_path.currentText())
         self.settings.setValue("Paths/default_lang", lang)
+        self.settings.setValue("UI/theme", self.current_theme)
         self.settings.setValue("Paths/anno117_folder", self.edit_anno117_folder.text().strip())
         self.settings.setValue("Paths/anno1800_folder", self.edit_anno1800_folder.text().strip())
         self.settings.setValue("Buffs/tags", "\n".join(tags))
@@ -2290,7 +2412,7 @@ class AnnoModTool(QMainWindow):
             item.setData(0, Qt.ItemDataRole.UserRole, child)
             
             if has_children:
-                item.setForeground(0, QColor("#81c784")) # Soft Green
+                item.setForeground(0, self._tree_colors()["group"])
                 font = item.font(0)
                 font.setBold(True)
 
@@ -2300,10 +2422,10 @@ class AnnoModTool(QMainWindow):
                 self.parse_logic_to_tree(child, item, tree_widget=target)
 
             else:
-                item.setForeground(1, QColor("#64b5f6")) # Light blue for values
+                item.setForeground(1, self._tree_colors()["value"])
                 
                 if klartext:
-                    item.setForeground(2, QColor("#ffd54f")) # Amber for names
+                    item.setForeground(2, self._tree_colors()["name"])
 
     def export_mod(self):
 

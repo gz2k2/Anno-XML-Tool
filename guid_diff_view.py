@@ -39,6 +39,64 @@ MARKER_COLORS = {
 FILLER_TEXT = ""
 _WORD_SPLIT = re.compile(r"(\W)")
 
+# Base hues the row backgrounds are derived from. They get blended towards the
+# editor background so the same code works on dark and on light themes.
+_HUE_ADDED = QColor("#22c55e")
+_HUE_REMOVED = QColor("#ef4444")
+_HUE_CHANGED = QColor("#3b82f6")
+
+# Editor colours the current diff palette was built for.
+_EDITOR_BG = QColor("#1e1e1e")
+_EDITOR_TEXT = QColor("#d4d4d4")
+
+
+def _mix(color: QColor, background: QColor, weight: float) -> QColor:
+    """Blend *color* over *background*; weight 0 -> background, 1 -> color."""
+    return QColor(
+        round(background.red() + (color.red() - background.red()) * weight),
+        round(background.green() + (color.green() - background.green()) * weight),
+        round(background.blue() + (color.blue() - background.blue()) * weight),
+    )
+
+
+def _is_dark(color: QColor) -> bool:
+    return (0.2126 * color.redF() + 0.7152 * color.greenF()
+            + 0.0722 * color.blueF()) < 0.5
+
+
+def apply_theme_colors(background: QColor, text: QColor) -> None:
+    """Rebuild the diff palette for the given editor background/text colour.
+
+    Called by the theme manager whenever the application theme changes.
+    """
+    global COLOR_ADDED, COLOR_REMOVED, COLOR_CHANGED, COLOR_INLINE, COLOR_FILLER
+    global COLOR_GUTTER_BG, COLOR_GUTTER_FG, COLOR_GUTTER_ACTIVE, MARKER_COLORS
+    global _EDITOR_BG, _EDITOR_TEXT
+
+    _EDITOR_BG, _EDITOR_TEXT = QColor(background), QColor(text)
+    dark = _is_dark(background)
+
+    # Light backgrounds need a gentler tint to keep the text readable.
+    row_weight = 0.50 if dark else 0.26
+    inline_weight = 0.62 if dark else 0.42
+    marker_weight = 1.0 if dark else 0.85
+
+    COLOR_ADDED = _mix(_HUE_ADDED, background, row_weight)
+    COLOR_REMOVED = _mix(_HUE_REMOVED, background, row_weight)
+    COLOR_CHANGED = _mix(_HUE_CHANGED, background, row_weight)
+    COLOR_INLINE = _mix(_HUE_CHANGED, background, inline_weight)
+    COLOR_FILLER = background.darker(115) if dark else background.darker(104)
+
+    COLOR_GUTTER_BG = background.lighter(135) if dark else background.darker(106)
+    COLOR_GUTTER_FG = _mix(text, background, 0.55)
+    COLOR_GUTTER_ACTIVE = _mix(_HUE_ADDED, background, 0.85)
+
+    MARKER_COLORS = {
+        "added": _mix(_HUE_ADDED, background, marker_weight),
+        "removed": _mix(_HUE_REMOVED, background, marker_weight),
+        "changed": _mix(_HUE_CHANGED, background, marker_weight),
+    }
+
 
 # --------------------------------------------------------------------------
 # Alignment logic (pure, unit-testable)
@@ -172,18 +230,33 @@ class DiffPane(QPlainTextEdit):
             font = QFont("Monospace", 10)
         self.setFont(font)
         self.setTabStopDistance(4 * self.fontMetrics().horizontalAdvance(" "))
-        self.setStyleSheet(
-            "QPlainTextEdit { background-color: #1e1e1e; color: #d4d4d4;"
-            " border: 1px solid #333; selection-background-color: #264f78; }"
-        )
+        self.refresh_theme()
 
         self._rows: list[dict] = []
         self._gutter = _GutterArea(self)
+        self.refresh_theme()
 
         self.blockCountChanged.connect(lambda _count: self._update_gutter_width())
         self.updateRequest.connect(self._on_update_request)
         self.cursorPositionChanged.connect(self._gutter.update)
         self._update_gutter_width()
+
+    def refresh_theme(self) -> None:
+        """Re-apply the editor colours after the application theme changed."""
+        selection = _mix(_HUE_CHANGED, _EDITOR_BG, 0.45)
+        self.setStyleSheet(
+            "QPlainTextEdit {{ background-color: {bg}; color: {fg};"
+            " border: 1px solid {border};"
+            " selection-background-color: {sel}; }}".format(
+                bg=_EDITOR_BG.name(), fg=_EDITOR_TEXT.name(),
+                border=_mix(_EDITOR_TEXT, _EDITOR_BG, 0.25).name(),
+                sel=selection.name(),
+            )
+        )
+        # May run from __init__ before the gutter exists.
+        gutter = getattr(self, "_gutter", None)
+        if gutter is not None:
+            gutter.update()
 
     # -- content ---------------------------------------------------------
     def set_rows(self, rows: list[dict]) -> None:
