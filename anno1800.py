@@ -13,8 +13,10 @@ Characteristics compared to Anno 117:
 
   ``Text/LineID`` only appears on a minority of assets and is used as a
   secondary source.
-* ``LineID`` is NOT a text reference in Anno 1800 - its value is an internal
-  number and must not be looked up in texts_*.xml.
+* ``LineID`` is NOT a text reference in Anno 1800 - it holds an internal
+  number and must never be looked up in texts_*.xml. The same applies to
+  ordinary stat tags such as ``BuildModeRandomRotation`` or
+  ``MaximumHitPoints``.
 * Many assets embed an English string directly as
   ``LocaText/English/Text``, which is used as the fallback name.
 * ``properties.xml`` ships alongside assets.xml and templates.xml.
@@ -39,18 +41,31 @@ class Anno1800Game(AnnoGame):
     text_key_tag = "GUID"
 
     guid_paths = ("Standard/GUID", "GUID")
-    # Anno 1800 has no OasisId and no text indirection: the asset GUID IS the
-    # text key. Text/LineID is deliberately absent - it holds an internal
-    # number, not a text reference.
+    # Anno 1800 has no OasisId and no indirection: the asset GUID IS the text
+    # key. Text/LineID is deliberately absent - it holds an internal number.
     display_text_paths = ("Standard/GUID", "GUID")
     tech_name_paths = ()
     description_paths = ("Text/InfoDescription", "Standard/InfoDescription")
     fallback_name_paths = ("Standard/Name", "Name")
 
-    # Only the GUID links to a text entry. Tags such as LineID,
-    # BuildModeRandomRotation or MaximumHitPoints carry ordinary numbers and
-    # are never resolved against texts_*.xml.
-    text_id_tags = frozenset({"GUID"})
+    # Only these tags link to a text entry. LineID, BuildModeRandomRotation,
+    # MaximumHitPoints and every other stat carry ordinary numbers and are
+    # never resolved against texts_*.xml. Extend this set if a tag turns out
+    # to be a genuine text reference.
+    text_id_tags = frozenset({
+        "GUID",             # references to another asset / the asset itself
+        "InfoDescription",  # description text
+    })
+
+    # Pure quantities. These reference nothing at all: neither a text entry
+    # nor an asset. <Amount>500</Amount> used to be resolved against the asset
+    # database and displayed the name of the asset with the GUID 500.
+    value_only_tags = frozenset({
+        "Amount",
+        "InactiveAmount",    # sibling of Amount in <Maintenance>
+        "MaximumHitPoints",
+        "LineID",            # internal number, not a text key
+    })
 
     #: Extra data file shipped with Anno 1800.
     properties_file = "properties.xml"
@@ -78,10 +93,9 @@ class Anno1800Game(AnnoGame):
     def display_text_id(self, asset: ET.Element, values: ET.Element) -> str | None:
         """Text key of the display name - always the asset's own GUID.
 
-        texts_*.xml keys its entries by the very same number, so no
-        indirection is involved. ``Text/LineID`` is explicitly NOT consulted:
-        it contains an internal number that would resolve to an unrelated
-        string.
+        texts_*.xml keys its entries by that very number, so no indirection is
+        involved. ``Text/LineID`` is explicitly NOT consulted: it contains an
+        internal number that would resolve to an unrelated string.
         """
         return self._first(values, ("Standard/GUID", "GUID"))
 

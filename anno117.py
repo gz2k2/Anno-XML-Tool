@@ -37,11 +37,18 @@ class Anno117Game(AnnoGame):
     # Tags that really reference a texts_*.xml entry. Everything else in an
     # asset is a plain number and must not be resolved as text.
     text_id_tags = frozenset({
-        "GUID",              # references to other assets
+        "GUID",              # references to another asset
         "OasisId",           # display name
         "LineId", "LineID",  # translated strings
         "VisibleTechName",
         "InfoDescription",
+    })
+
+    # Pure quantities that reference neither a text entry nor an asset.
+    value_only_tags = frozenset({
+        "Amount",
+        "Elements",
+        "MaximumHitPoints",
     })
 
     reference_fields = {

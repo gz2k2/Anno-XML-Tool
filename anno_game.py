@@ -41,9 +41,10 @@ from __future__ import annotations
 import os
 import xml.etree.ElementTree as ET
 
-# Text ids used to be detected as "any numeric leaf value", which wrongly
-# turned plain numbers into text lookups - <MaximumHitPoints>2500</...> would
-# resolve against texts_*.xml and show an unrelated string. Each game now
+# Text ids used to be detected as "any numeric leaf value", excluding only a
+# couple of tags. That wrongly turned plain numbers into text lookups:
+# <MaximumHitPoints>2500</MaximumHitPoints> resolved against texts_*.xml and
+# displayed whatever string happened to carry the id 2500. Each game now
 # declares an explicit allowlist of tags that really reference a text entry.
 
 
@@ -75,12 +76,18 @@ class AnnoGame:
     #: Candidate paths for a literal name used when no translation exists.
     fallback_name_paths: tuple[str, ...] = ("Standard/Name",)
 
-    #: Tags whose numeric content references an entry in texts_*.xml.
-    #: Deliberately an allowlist: every other number in an asset is a plain
-    #: value (hit points, rotation, probabilities) and must never be linked.
+    #: Tags whose content references an entry in texts_*.xml. Deliberately an
+    #: allowlist: any other number in an asset is a plain value (hit points,
+    #: rotation, probabilities) and must never be resolved as text.
     text_id_tags: frozenset = frozenset()
 
-    #: Numbers below this are never text keys; they are ordinary values.
+    #: Tags holding a pure quantity. Their value references NOTHING - neither
+    #: a text entry nor another asset. Without this, <Amount>500</Amount>
+    #: would be matched against the asset database and display the name of
+    #: whichever asset happens to have the GUID 500.
+    value_only_tags: frozenset = frozenset()
+
+    #: Numbers below this are never text keys, they are ordinary values.
     min_text_id_value: int = 1000
 
     #: Tag -> child element holding the referenced GUID.
@@ -167,19 +174,36 @@ class AnnoGame:
             return False
         return int(value) >= self.min_text_id_value
 
+    def is_value_only(self, tag: str) -> bool:
+        """True when *tag* holds a plain quantity that references nothing."""
+        return tag in self.value_only_tags
+
+    def is_text_reference(self, tag: str, value) -> bool:
+        """True when *tag* points at a text entry and *value* looks like a key."""
+        if self.is_value_only(tag):
+            return False
+        if not self.text_id_tags:
+            return True
+        return tag in self.text_id_tags and self.is_text_id(value)
+
+    def is_asset_reference(self, tag: str) -> bool:
+        """True when *tag* may point at another asset.
+
+        Used before resolving a value against the asset database, so that
+        quantities are never mistaken for GUIDs.
+        """
+        return not self.is_value_only(tag)
+
     def collect_text_ids(self, asset: ET.Element, values: ET.Element) -> list[str]:
         """Ids inside the asset that may resolve to a translation.
 
-        Only tags listed in :attr:`text_id_tags` are considered. Collecting
-        every numeric value would link unrelated numbers such as
-        ``<BuildModeRandomRotation>90</BuildModeRandomRotation>`` or
-        ``<MaximumHitPoints>2500</MaximumHitPoints>`` to whatever text entry
-        happens to carry that id.
+        Only tags listed in :attr:`text_id_tags` are considered - see the note
+        at the top of this module.
         """
         found = set()
         if self.text_id_tags:
             for child in values.iter():
-                if child.tag in self.text_id_tags and self.is_text_id(child.text):
+                if self.is_text_reference(child.tag, child.text):
                     found.add(child.text.strip())
 
         for extra in (self.display_text_id(asset, values),

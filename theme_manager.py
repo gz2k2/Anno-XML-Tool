@@ -444,6 +444,39 @@ def header_background(key: str) -> QColor:
     return background.lighter(160) if is_dark(background) else background.darker(112)
 
 
+#: XML syntax colours for a dark editor background (VS Code "Dark+" palette).
+_XML_COLORS_DARK = {
+    "tag": "#4ec9b0",
+    "attr": "#9cdcfe",
+    "value": "#ce9178",
+    "comment": "#6a9955",
+    "text": "#dcdcdc",
+}
+
+#: The same roles for a light background. The dark palette is unusable here -
+#: #dcdcdc body text on white is effectively invisible.
+_XML_COLORS_LIGHT = {
+    "tag": "#0f6f5c",
+    "attr": "#0451a5",
+    "value": "#a31515",
+    "comment": "#3c7a3c",
+    "text": "#1f1f1f",
+}
+
+
+def xml_highlight_colors(key: str) -> dict:
+    """Syntax colours for the XML views, matched to the editor background.
+
+    Every colour is additionally pushed to at least 4.5x contrast against the
+    actual background, so a theme with an unusually light or dark base still
+    produces readable markup.
+    """
+    background = editor_colors(key)["background"]
+    palette = _XML_COLORS_DARK if is_dark(background) else _XML_COLORS_LIGHT
+    return {role: readable_on(QColor(value), background, 4.5)
+            for role, value in palette.items()}
+
+
 def combo_header_color(key: str) -> QColor:
     """Readable text colour for a group header in a combo box popup.
 

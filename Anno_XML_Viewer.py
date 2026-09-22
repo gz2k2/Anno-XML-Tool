@@ -115,47 +115,65 @@ def version_key(version):
 ################################################################################
 
 class XMLHighlighter(QSyntaxHighlighter):
-    """
-    Provides basic syntax highlighting for XML content in QTextEdit.
+    """Basic XML syntax highlighting that follows the active theme.
+
+    The colours used to be hard-coded for a dark editor. On a light theme the
+    body text (#dcdcdc) was practically invisible against a white background,
+    so the palette is now supplied by the theme manager.
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, colors=None):
 
         super().__init__(parent)
 
         self.styles = {}
-        
+        self.set_colors(colors or theme_manager.xml_highlight_colors(
+            theme_manager.ANNO_DARK))
+
+    def set_colors(self, colors, rehighlight=False):
+        """Install a colour palette produced by ``xml_highlight_colors``."""
+
         tag_format = QTextCharFormat()
-        tag_format.setForeground(QColor("#4ec9b0"))  # Grün-Türkis für Tags
+        tag_format.setForeground(colors["tag"])
         tag_format.setFontWeight(QFont.Weight.Bold)
         self.styles["tag"] = tag_format
 
         attr_format = QTextCharFormat()
-        attr_format.setForeground(QColor("#9cdcfe"))  # Hellblau für Attribute
+        attr_format.setForeground(colors["attr"])
         self.styles["attr"] = attr_format
 
         value_format = QTextCharFormat()
-        value_format.setForeground(QColor("#ce9178"))  # Gleiche Farbe für Attributwerte
+        value_format.setForeground(colors["value"])
         self.styles["value"] = value_format
 
         comment_format = QTextCharFormat()
-        comment_format.setForeground(QColor("#6a9955"))  # Grün für Kommentare
+        comment_format.setForeground(colors["comment"])
         self.styles["comment"] = comment_format
 
         text_format = QTextCharFormat()
-        text_format.setForeground(QColor("#dcdcdc"))  # Silbergrau für Textinhalt
+        text_format.setForeground(colors["text"])
         self.styles["text"] = text_format
+
+        if rehighlight:
+            self.rehighlight()
 
     def highlightBlock(self, text):
 
         if not text:
             return
 
+        for match in re.finditer(r"<!--.*?-->", text):
+            self.setFormat(match.start(), match.end() - match.start(),
+                           self.styles["comment"])
+            return
+
         for match in re.finditer(r"<(/?[\w:]+)", text):
-            self.setFormat(match.start(), match.end() - match.start(), self.styles["tag"])
-        
+            self.setFormat(match.start(), match.end() - match.start(),
+                           self.styles["tag"])
+
         for match in re.finditer(r">([^<]+)<", text):
-            self.setFormat(match.start(1), match.end(1) - match.start(1), self.styles["text"])
+            self.setFormat(match.start(1), match.end(1) - match.start(1),
+                           self.styles["text"])
 
 
 class VersionCheckWorker(QThread):
@@ -1298,10 +1316,11 @@ class AnnoModTool(QMainWindow):
 
         # Highlighter müssen referenziert bleiben, um Garbage Collection zu verhindern.
         self.highlighters = []
+        xml_colors = theme_manager.xml_highlight_colors(self.current_theme)
 
         # DiffPane instances style themselves but still want XML highlighting.
         for view in (self.compare_left_xml, self.compare_right_xml):
-            self.highlighters.append(XMLHighlighter(view.document()))
+            self.highlighters.append(XMLHighlighter(view.document(), xml_colors))
 
         for view in self.xml_views:
             view.setFont(code_font)
@@ -1311,17 +1330,10 @@ class AnnoModTool(QMainWindow):
             view.setStyleSheet(self._code_view_stylesheet())
             
             if view != self.debug_console:
-                highlighter = XMLHighlighter(view.document())
+                highlighter = XMLHighlighter(view.document(), xml_colors)
                 self.highlighters.append(highlighter)
 
-        if theme_manager.qt_themes_available():
-            self.append_debug_log(
-                f"[theme] qt-themes ready, "
-                f"{len(theme_manager.list_themes()) - 1} extra themes available."
-            )
-        else:
-            self.append_debug_log(f"[theme] qt-themes unavailable - "
-                                  f"{theme_manager.unavailable_reason()}")
+        self.append_debug_log(f"[theme] {theme_manager.diagnostics()}")
 
         active_path = self.combo_xml_path.currentText()
         if active_path and os.path.exists(active_path):
@@ -1486,6 +1498,10 @@ class AnnoModTool(QMainWindow):
             view.setStyleSheet(stylesheet)
 
         self._tree_color_cache = None
+        # XML syntax colours are baked into the highlighters.
+        xml_colors = theme_manager.xml_highlight_colors(applied)
+        for highlighter in getattr(self, "highlighters", []):
+            highlighter.set_colors(xml_colors, rehighlight=True)
         # Group headers carry explicit brushes, so they must be rebuilt.
         if hasattr(self, "combo_xml_path"):
             self._populate_path_selector(self.combo_xml_path)
@@ -1537,8 +1553,21 @@ class AnnoModTool(QMainWindow):
         )
         box.exec()
 
-    def get_klartext(self, text):
+    def get_klartext(self, text, tag=None):
+        """Resolve a value to a readable name.
 
+        *tag* is the XML element the value came from and decides what the
+        value may be resolved against:
+
+        * quantity tags (<Amount>, <MaximumHitPoints>, <LineID>) reference
+          nothing and are never resolved,
+        * other tags may point at another asset,
+        * only tags the game lists in ``text_id_tags`` are looked up in
+          texts_*.xml.
+
+        Without the tag check, <Amount>500</Amount> matched the asset with
+        the GUID 500 and displayed its name.
+        """
         if not text:
             return ""
 
@@ -1548,17 +1577,40 @@ class AnnoModTool(QMainWindow):
 
         lang_dict = self.languages_db.get(lang, {})
 
-        if text in self.assets_db:
+        # A pure quantity never references anything - stop before any lookup.
+        if tag is not None and self._is_value_only(tag):
+            return ""
+
+        # A reference to another asset.
+        if text in self.assets_db and (tag is None or self._is_asset_reference(tag)):
             info = self.assets_db[text]
             oasis_id = info.get("oasis_id")
             v_tech_id = info.get("visible_tech_name_id")
             name = lang_dict.get(oasis_id) or lang_dict.get(v_tech_id) or info.get("fallback_name", "N/A")
             return f"({name})"
 
+        if tag is not None and not self._is_text_reference(tag, text):
+            return ""
+
         if text in lang_dict:
             return f"(Text: {lang_dict[text]})"
 
         return ""
+
+    def _is_value_only(self, tag):
+        """True when *tag* holds a plain quantity that references nothing."""
+        checker = getattr(self.active_game, "is_value_only", None)
+        return bool(checker(tag)) if checker else False
+
+    def _is_asset_reference(self, tag):
+        """True when *tag* may point at another asset."""
+        checker = getattr(self.active_game, "is_asset_reference", None)
+        return checker(tag) if checker else True
+
+    def _is_text_reference(self, tag, value):
+        """True when *tag* really points at an entry in texts_*.xml."""
+        checker = getattr(self.active_game, "is_text_reference", None)
+        return checker(tag, value) if checker else True
 
     def browse_path_settings(self, group_key):
         """Add an XML base folder to one game's folder list."""
@@ -1897,7 +1949,7 @@ class AnnoModTool(QMainWindow):
                 content_lines.append(f"<!-- Unique values found for <{tag_name}> ({len(values)} entries) -->")
                 for val in values:
                     # Resolve GUIDs/TextIDs to names for better readability
-                    klartext = self.get_klartext(val)
+                    klartext = self.get_klartext(val, tag_name)
                     if klartext:
                         content_lines.append(f"{val} {klartext}")
                     else:
@@ -2282,11 +2334,8 @@ class AnnoModTool(QMainWindow):
             has_children = len(child) > 0
             val = (child.text or "").strip() if not has_children else ""
 
-            # Avoid looking up plaintext for amount values to prevent false positives
-            if child.tag == "Amount" or child.tag == "Elements":
-                klartext = ""
-            else:
-                klartext = self.get_klartext(val)
+            # The tag decides whether the value is a text reference at all.
+            klartext = self.get_klartext(val, child.tag)
             
             item = QTreeWidgetItem(parent_item or target, [child.tag, val, klartext])
             item.setData(0, Qt.ItemDataRole.UserRole, child)
