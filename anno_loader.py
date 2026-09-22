@@ -6,6 +6,8 @@ and Anno 1800 is delegated to an :class:`anno_game.AnnoGame` implementation.
 
 from __future__ import annotations
 
+import copy
+import re
 import xml.etree.ElementTree as ET
 
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -13,10 +15,18 @@ from PyQt6.QtCore import QThread, pyqtSignal
 import anno_game
 
 
+# A GUID reference is an element whose whole content is a number, e.g.
+# <EffectAsset>1010371</EffectAsset>. Matching the serialised asset is the
+# same test the reverse search used to run per click, only now once per load.
+_GUID_REFERENCE = re.compile(r">(\d+)<")
+
+
 class AnnoLoader(QThread):
     """Load assets, templates and texts of one folder in the background."""
 
-    finished = pyqtSignal(dict, dict, dict, list, dict, dict)
+    # The last dict is the reverse-reference index: referenced GUID -> list of
+    # GUIDs pointing at it.
+    finished = pyqtSignal(dict, dict, dict, list, dict, dict, dict)
     status = pyqtSignal(str)
     debug_log = pyqtSignal(str)
 
@@ -57,11 +67,18 @@ class AnnoLoader(QThread):
             self.status.emit("Analyzing assets & learning structures...")
             assets = self._load_assets(files["assets"])
 
+            self.status.emit("Indexing asset references...")
+            reverse_index = self._build_reverse_index(assets)
+            self.debug_log.emit(
+                f"Reverse index built: {len(reverse_index)} referenced GUIDs."
+            )
+
             self.debug_log.emit(f"Success: {len(assets)} assets available in the editor.")
             self.finished.emit(
                 assets, templates, languages,
                 list(self.structure_catalog.keys()),
                 self.template_library, self.value_catalog,
+                reverse_index,
             )
         except Exception as exc:
             self.debug_log.emit(f"CRITICAL ERROR: {exc}")
@@ -106,9 +123,17 @@ class AnnoLoader(QThread):
 
     def _load_assets(self, path: str) -> dict:
         assets = {}
-        # iterparse keeps memory low on multi-hundred-MB asset files.
-        for _event, element in ET.iterparse(path, events=("end",)):
-            if element.tag != "Asset":
+        root = None
+
+        # iterparse alone is not enough: a cleared element stays attached to
+        # the root, so the whole document still ends up in memory. The root is
+        # therefore captured on the first "start" event and every finished
+        # asset is detached from it.
+        for event, element in ET.iterparse(path, events=("start", "end")):
+            if root is None and event == "start":
+                root = element
+                continue
+            if event != "end" or element.tag != "Asset":
                 continue
 
             values = element.find("Values")
@@ -120,8 +145,28 @@ class AnnoLoader(QThread):
                     for category in values:
                         self._recursive_index(category, category.tag,
                                               record["template_name"])
+
             element.clear()
+            if root is not None and len(root) > 1:
+                del root[:-1]
         return assets
+
+    # -- reference indexing ----------------------------------------------
+    def _build_reverse_index(self, assets: dict) -> dict:
+        """Map every referenced GUID to the assets pointing at it.
+
+        Built once per load so the References pane no longer has to scan the
+        serialised XML of every asset on each click.
+        """
+        reverse: dict[str, list[str]] = {}
+        for guid, record in assets.items():
+            for referenced in set(_GUID_REFERENCE.findall(record["xml"])):
+                # Self-references and numbers that are no asset at all (plain
+                # quantities) are of no use to the References pane.
+                if referenced == guid or referenced not in assets:
+                    continue
+                reverse.setdefault(referenced, []).append(guid)
+        return reverse
 
     # -- structure indexing ----------------------------------------------
     def _recursive_index(self, node, current_path, template_name):
@@ -146,7 +191,9 @@ class AnnoLoader(QThread):
                     # Keep a single <Item> as representative for list structures.
                     if child.tag == "Item" and "Item" in seen:
                         continue
-                    clean_node.append(ET.fromstring(ET.tostring(child)))
+                    # deepcopy instead of tostring/fromstring: the round trip
+                    # serialised and re-parsed every single structure element.
+                    clean_node.append(copy.deepcopy(child))
                     seen.add(child.tag)
 
                 variants[child_tags] = {

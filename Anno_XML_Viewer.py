@@ -691,6 +691,8 @@ class AnnoModTool(QMainWindow):
 
         self._active_game = None
         self.assets_db, self.templates_db, self.languages_db = {}, {}, {}
+        # referenced GUID -> assets referencing it, filled by the loader.
+        self.reverse_index = {}
         self.template_library = {}
         self.structure_catalog_list = []
         self.watchlist_groups = self._load_watchlist_groups()
@@ -1286,9 +1288,17 @@ class AnnoModTool(QMainWindow):
         xml_settings_layout.addWidget(self.btn_save_xml)
         xml_settings_layout.addStretch()
 
+        # SEARCH DEBOUNCE ##############################################################
+        # Filtern erst, wenn 500 ms lang keine Eingabe mehr erfolgt ist. Ohne das
+        # laeuft apply_filter() bei jedem Tastendruck ueber die komplette assets_db.
+        self._search_debounce = QTimer(self)
+        self._search_debounce.setSingleShot(True)
+        self._search_debounce.setInterval(500)
+        self._search_debounce.timeout.connect(self.apply_filter)
+
         # SIGNALS ######################################################################
 
-        self.search.textChanged.connect(self.apply_filter)
+        self.search.textChanged.connect(self._schedule_filter)
         self.cb_search_main_only.toggled.connect(self.apply_filter)
         self.combo_lang.currentIndexChanged.connect(self.on_language_changed)
         self.combo_xml_path.currentIndexChanged.connect(self.on_xml_path_changed)
@@ -1871,11 +1881,12 @@ class AnnoModTool(QMainWindow):
                 self.combo_xml_path.setCurrentIndex(index)
             self.start_loading(folder)
 
-    def on_data_ready(self, a, t, langs, cat_list, t_lib, v_cat):
+    def on_data_ready(self, a, t, langs, cat_list, t_lib, v_cat, rev_index=None):
 
         self.block_signals = True
 
         self.assets_db, self.templates_db, self.languages_db = a, t, langs
+        self.reverse_index = rev_index or {}
         self.structure_catalog_list = sorted(list(cat_list)) 
         self.template_library = t_lib
         self.value_catalog = v_cat
@@ -2024,7 +2035,17 @@ class AnnoModTool(QMainWindow):
                     self.load_asset_details(self.table.item(row, 0))
                     break
 
+    def _schedule_filter(self, _text=""):
+        """Restart the debounce timer; the filter runs once typing pauses."""
+        self._search_debounce.start()
+
     def apply_filter(self):
+
+        # A pending debounce run would repeat the work right after a direct
+        # call (checkbox, language change, on_data_ready).
+        timer = getattr(self, "_search_debounce", None)
+        if timer is not None:
+            timer.stop()
 
         query_text = self.search.text().lower()
         parts = query_text.split()
@@ -2229,35 +2250,41 @@ class AnnoModTool(QMainWindow):
         self.block_signals = False
 
     def update_reverse_search(self, guid):
-        """Searches for all assets that reference the specified GUID."""
+        """List all assets that reference the specified GUID.
 
-        self.reverse_search_table.setRowCount(0)
+        The referencing assets come from the index the loader built, so this
+        no longer scans the XML of every asset on each click.
+        """
+
         self.reverse_search_table.setSortingEnabled(False)
+        self.reverse_search_table.setUpdatesEnabled(False)
+        self.reverse_search_table.setRowCount(0)
 
-        search_pattern = f">{guid}<"
         lang_dict = self.languages_db.get(self.combo_lang.currentText(), {})
+        referencing = self.reverse_index.get(guid, [])
 
-        for other_guid, info in self.assets_db.items():
-            # Ignore the asset itself
-            if other_guid == guid:
+        # The row count is known up front, so Qt does not have to re-layout
+        # the table for every single insertRow().
+        self.reverse_search_table.setRowCount(len(referencing))
+
+        for row, other_guid in enumerate(referencing):
+            info = self.assets_db.get(other_guid)
+            if info is None:
                 continue
 
-            if search_pattern in info['xml']:
-                row = self.reverse_search_table.rowCount()
-                self.reverse_search_table.insertRow(row)
+            name = lang_dict.get(info['oasis_id']) or lang_dict.get(info.get('visible_tech_name_id')) or info['fallback_name']
 
-                name = lang_dict.get(info['oasis_id']) or lang_dict.get(info.get('visible_tech_name_id')) or info['fallback_name']
+            guid_item = QTableWidgetItem()
+            # Prefer numerical sorting for GUIDs if they are digits
+            if other_guid.isdigit():
+                guid_item.setData(Qt.ItemDataRole.DisplayRole, int(other_guid))
+            else:
+                guid_item.setText(other_guid)
+            self.reverse_search_table.setItem(row, 0, guid_item)
+            self.reverse_search_table.setItem(row, 1, QTableWidgetItem(name))
+            self.reverse_search_table.setItem(row, 2, QTableWidgetItem(info['template_name']))
 
-                guid_item = QTableWidgetItem()
-                # Prefer numerical sorting for GUIDs if they are digits
-                if other_guid.isdigit():
-                    guid_item.setData(Qt.ItemDataRole.DisplayRole, int(other_guid))
-                else:
-                    guid_item.setText(other_guid)
-                self.reverse_search_table.setItem(row, 0, guid_item)
-                self.reverse_search_table.setItem(row, 1, QTableWidgetItem(name))
-                self.reverse_search_table.setItem(row, 2, QTableWidgetItem(info['template_name']))
-
+        self.reverse_search_table.setUpdatesEnabled(True)
         self.reverse_search_table.setSortingEnabled(True)
 
     def update_buffs_preview(self):
