@@ -1,6 +1,5 @@
 import sys
 import os
-import glob
 import re
 import multiprocessing
 from queue import Empty
@@ -12,6 +11,8 @@ from guid_diff_view import (DiffPane, SyncScrollGroup, set_diff_texts,
                             format_stats)
 import guid_diff_view
 import theme_manager
+import anno_game
+from anno_loader import AnnoLoader
 from datetime import datetime
 import xml.etree.ElementTree as ET
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
@@ -20,8 +21,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QSplitter, QMessageBox, QTreeWidget, QTreeWidgetItem, 
                              QMenu, QDialog, QListWidget, QListWidgetItem, 
                              QDialogButtonBox, QComboBox, QTabWidget, QGroupBox,
-                             QCheckBox, QProgressDialog, QSizePolicy,
-                             QListView, QStyledItemDelegate)
+                             QCheckBox, QProgressDialog, QSizePolicy)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSettings, QUrl, QTimer
 from PyQt6.QtGui import (QSyntaxHighlighter, QTextCharFormat, QColor, QFont, QAction,
                          QPixmap, QIcon, QTextCursor)
@@ -32,23 +32,15 @@ GITHUB_PROJECT_URL = "https://github.com/gz2k2/Anno-XML-Tool"
 GITHUB_VERSION_URL = GITHUB_PROJECT_URL + "/blob/main/version.txt"
 GITHUB_VERSION_RAW_URL = "https://raw.githubusercontent.com/gz2k2/Anno-XML-Tool/main/version.txt"
 
-# XML base folders are kept per game: (key, display label, settings key).
-XML_PATH_GROUPS = (
-    ("anno117", "Anno 117 XML Files", "Paths/xml_paths_anno117"),
-    ("anno1800", "Anno 1800 XML Files", "Paths/xml_paths_anno1800"),
-)
+# XML base folders are kept per game. The games themselves live in
+# anno117.py / anno1800.py, so adding a title does not touch this file.
+XML_PATH_GROUPS = anno_game.path_groups()
 
-DEFAULT_BUFF_FILTER_TAGS = [
-    "AdditionalFunctionalEffect",
-    "BoostBuffs",
-    "Buffs",
-    "Effects",
-    "FunctionalEffects",
-    "Resources",
-    "TechResearchableTrigger",
-    "UnlockReward",
-    "MythicEffect",
-]
+# Union of the buff/effect tags all games care about. The per-game lists
+# live in the anno_* modules.
+DEFAULT_BUFF_FILTER_TAGS = sorted(
+    {tag for game in anno_game.all_games() for tag in game.default_buff_tags}
+)
 
 
 ################################################################################
@@ -191,182 +183,8 @@ class VersionCheckWorker(QThread):
 # BACKGROUND WORKERS
 ################################################################################
 
-class AnnoLoader(QThread):
-    """
-    Loads Anno 117 game data (assets, templates, texts) asynchronously in the background.
-    """
-
-    finished = pyqtSignal(dict, dict, dict, list, dict, dict) 
-    status = pyqtSignal(str)
-    debug_log = pyqtSignal(str)
-
-    def __init__(self, folder_path):
-
-        super().__init__()
-
-        self.folder = folder_path
-        self.structure_catalog = {} 
-        self.template_library = {}
-        self.value_catalog = {}
-
-    def run(self):
-
-        templates, assets, languages = {}, {}, {}
-
-        # Recursive search for game data files in all subfolders
-        asset_paths = glob.glob(os.path.join(self.folder, "**/assets.xml"), recursive=True)
-        template_paths = glob.glob(os.path.join(self.folder, "**/templates.xml"), recursive=True)
-        text_files = glob.glob(os.path.join(self.folder, "**/texts_*.xml"), recursive=True)
-        text_files = [tf for tf in text_files if os.path.basename(tf) != "texts_metadata.xml"]
-
-        a_path = asset_paths[0] if asset_paths else ""
-        t_path = template_paths[0] if template_paths else ""
-
-        self.debug_log.emit(f"### Loading process started: {self.folder} ###")
-
-        if not a_path:
-            self.debug_log.emit("ERROR: assets.xml not found in selected directory tree.")
-            return
-
-        self.status.emit("Loading texts...")
-
-        try:
-            for tf in text_files:
-                lang_name = os.path.basename(tf).replace("texts_", "").replace(".xml", "")
-                lang_dict = {}
-                tex_tree = ET.parse(tf)
-                for tex in tex_tree.findall(".//Text"):
-                    # Anno 117 uses LineId, while Anno 1800 uses GUID for
-                    # the same text-key purpose.
-                    line_id = tex.findtext("LineId") or tex.findtext("GUID")
-                    content = tex.findtext("Text")
-
-                    if line_id and content is not None:
-                        lang_dict[line_id.strip()] = content
-
-                languages[lang_name] = lang_dict
-                self.debug_log.emit(f"Language loaded: {lang_name} ({len(lang_dict)} entries)")
-
-            if t_path:
-                t_tree = ET.parse(t_path)
-                for t in t_tree.iter("Template"):
-                    name_node = t.find("Name")
-                    if name_node is not None and name_node.text:
-                        templates[name_node.text.strip()] = ET.tostring(t, encoding='unicode')
-                self.debug_log.emit(f"{len(templates)} templates registered from templates.xml.")
-
-            self.status.emit("Analyzing assets & learning structures...")
-            asset_count = 0
-
-            # Iterparse für speicherschonendes Laden großer XML-Dateien
-            for event, elem in ET.iterparse(a_path, events=("end",)):
-                if elem.tag == "Asset":
-                    template_name = elem.findtext("Template") or "NoTemplate"
-                    vals = elem.find("Values")
-
-                    if vals is not None:
-                        guid = vals.findtext(".//GUID")
-
-                        if guid:
-                            text_ids = set()
-
-                            for child in vals.iter():
-
-                                if child.tag == "Amount":
-                                    continue
-
-                                if child.text and child.text.strip():
-                                    t = child.text.strip()
-                                    if t.replace("-", "").isdigit():
-                                        text_ids.add(t)
-
-                            # Anno 1800 stores the localized display text
-                            # reference as Text/LineID in assets.xml.
-                            asset_line_id = (
-                                vals.findtext(".//Text/LineID")
-                                or elem.findtext(".//Text/LineID")
-                            )
-                            if asset_line_id:
-                                text_ids.add(asset_line_id.strip())
-
-                            inline_display_text = elem.findtext(".//LocaText/English/Text")
-                            
-                            assets[guid] = {
-                                "xml": ET.tostring(elem, encoding='unicode'),
-                                "template_name": template_name,
-                                "oasis_id": (
-                                    vals.findtext(".//Text/OasisId")
-                                    or vals.findtext(".//Text/LineID")
-                                    or elem.findtext(".//Text/LineID")
-                                ),
-                                "visible_tech_name_id": vals.findtext(".//Tech/VisibleTechName"),
-                                "info_description_id": vals.findtext(".//Standard/InfoDescription"),
-                                "fallback_name": (
-                                    inline_display_text
-                                    or vals.findtext(".//Standard/Name")
-                                    or "N/A"
-                                ),
-                                "text_ids": list(text_ids)
-                            }
-                            asset_count += 1
-
-                            for category in vals:
-                                self._recursive_index(category, category.tag, template_name)
-
-                        elem.clear()
-
-            self.debug_log.emit(f"Success: {asset_count} assets available in the editor.")
-            self.finished.emit(assets, templates, languages, list(self.structure_catalog.keys()), self.template_library, self.value_catalog)
-
-        except Exception as e: 
-            self.debug_log.emit(f"CRITICAL ERROR: {str(e)}")
-
-    def _recursive_index(self, node, current_path, template_name):
-
-        if not isinstance(node.tag, str):
-            return
-
-        if current_path not in self.structure_catalog:
-            self.structure_catalog[current_path] = True
-
-        # Index unique text values for leaf nodes (no children)
-        if len(node) == 0:
-            if node.text and node.text.strip():
-                val = node.text.strip()
-                if current_path not in self.value_catalog:
-                    self.value_catalog[current_path] = set()
-                self.value_catalog[current_path].add(val)
-
-        if len(node) > 0:
-            if template_name not in self.template_library:
-                self.template_library[template_name] = {}
-
-            if current_path not in self.template_library[template_name]:
-                self.template_library[template_name][current_path] = {}
-            
-            child_tags = tuple(sorted(list(set(c.tag for c in node))))
-
-            if child_tags not in self.template_library[template_name][current_path]:
-                clean_node = ET.Element(node.tag)
-                seen_in_template = set()
-
-                for c in node:
-                    # We store only one 'Item' as a representative for list structures
-                    if c.tag == "Item" and "Item" in seen_in_template:
-                        continue
-
-                    clean_node.append(ET.fromstring(ET.tostring(c)))
-                    seen_in_template.add(c.tag)
-                
-                self.template_library[template_name][current_path][child_tags] = {
-                    "xml": ET.tostring(clean_node, encoding='unicode'),
-                    "label": f"[{', '.join(child_tags)}]"
-                }
-
-        for child in node:
-            if isinstance(child.tag, str):
-                self._recursive_index(child, f"{current_path}/{child.tag}", template_name)
-
+# AnnoLoader lives in anno_loader.py and delegates every game-specific rule
+# to anno117.py / anno1800.py.
 
 
 ################################################################################
@@ -465,31 +283,44 @@ class AnnoModTool(QMainWindow):
         model = selector.model()
         for index in range(selector.count()):
             item = model.item(index) if hasattr(model, "item") else None
-            if item is not None and not item.isEnabled():
+            if item is not None and not (item.flags() & Qt.ItemFlag.ItemIsSelectable):
                 continue
             if selector.itemText(index).strip():
                 return index
         return -1
 
     def _populate_path_selector(self, selector):
-        """Fill a path combo box, grouped by game with disabled headers."""
+        """Fill a path combo box, grouped by game with readable headers."""
         selected_path = selector.currentText()
         selector.blockSignals(True)
         selector.clear()
+
+        theme_key = getattr(self, "current_theme", theme_manager.ANNO_DARK)
+        header_text = theme_manager.combo_header_color(theme_key)
+        header_band = theme_manager.header_background(theme_key)
 
         for key, label, _settings_key in XML_PATH_GROUPS:
             paths = self.xml_path_groups.get(key, [])
             if not paths:
                 continue
-            if selector.count():
-                selector.insertSeparator(selector.count())
+
             selector.addItem(label)
             header = selector.model().item(selector.count() - 1)
             if header is not None:
-                header.setEnabled(False)
+                # The header must stay ENABLED. A disabled item is painted by
+                # Qt with the QPalette.Disabled colour group, which ignores
+                # any foreground brush set here and produces the washed-out
+                # grey text. Dropping ItemIsSelectable keeps it unclickable
+                # and skips it during keyboard navigation, while the normal
+                # colour group - and therefore our brushes - stay in effect.
+                header.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                header.setForeground(header_text)
+                header.setBackground(header_band)
                 header_font = header.font()
                 header_font.setBold(True)
                 header.setFont(header_font)
+                header.setToolTip(f"{label} - configured under Settings > XML Settings")
+
             selector.addItems(paths)
 
         index = selector.findText(selected_path) if selected_path else -1
@@ -546,31 +377,65 @@ class AnnoModTool(QMainWindow):
 
         return sorted(set(tags or DEFAULT_BUFF_FILTER_TAGS))
 
-    def _load_watchlist_guids(self):
+    @staticmethod
+    def _watchlist_settings_key(game_key):
+        return f"Watchlist/guids_{game_key}"
 
-        saved_guids = self.settings.value("Watchlist/guids", "")
-        if isinstance(saved_guids, list):
-            guids = saved_guids
+    def _read_guid_list(self, settings_key):
+        stored = self.settings.value(settings_key, "")
+        if isinstance(stored, list):
+            guids = stored
         else:
-            guids = str(saved_guids).replace("\\n", "\n").splitlines()
-
+            guids = str(stored).replace("\\n", "\n").splitlines()
         return list(dict.fromkeys(guid.strip() for guid in guids if guid.strip()))
 
-    def _save_watchlist_guids(self):
+    def _load_watchlist_groups(self):
+        """Read the per-game watchlists, migrating the old shared list."""
+        groups = {}
+        stored_anything = False
 
-        self.settings.setValue("Watchlist/guids", "\n".join(self.watchlist_guids))
+        for game_key, _label, _settings_key in XML_PATH_GROUPS:
+            guids = self._read_guid_list(self._watchlist_settings_key(game_key))
+            if guids:
+                stored_anything = True
+            groups[game_key] = guids
+
+        if not stored_anything:
+            # Migration: the old shared "Watchlist/guids" belonged to whichever
+            # folder was active back then.
+            legacy = self._read_guid_list("Watchlist/guids")
+            if legacy:
+                saved_path = str(self.settings.value("Paths/xml_path", "") or "")
+                groups[self._game_key_for_path(saved_path)] = legacy
+
+        return groups
+
+    def _active_watchlist_key(self):
+        """Game key whose watchlist is currently shown."""
+        game = getattr(self, "_active_game", None)
+        if game is not None and getattr(game, "key", ""):
+            return game.key
+        combo = getattr(self, "combo_xml_path", None)
+        return self._game_key_for_path(combo.currentText() if combo else "")
+
+    @property
+    def watchlist_guids(self):
+        """Watchlist of the currently active game."""
+        return self.watchlist_groups.setdefault(self._active_watchlist_key(), [])
+
+    @watchlist_guids.setter
+    def watchlist_guids(self, guids):
+        self.watchlist_groups[self._active_watchlist_key()] = list(guids)
+
+    def _save_watchlist_guids(self):
+        key = self._active_watchlist_key()
+        self.settings.setValue(self._watchlist_settings_key(key),
+                               "\n".join(self.watchlist_groups.get(key, [])))
+        self.settings.sync()
 
     def _reference_guid(self, tag, node):
-
-        reference_fields = {
-            "Effects": "EffectAsset",
-            "FunctionalEffects": "FunctionalEffect",
-            "TechResearchableTrigger": "TechResearchableTrigger",
-            "UnlockReward": "UnlockReward",
-            "Resources": "Resource",
-        }
-
-        return node.findtext(reference_fields.get(tag, "GUID"))
+        """Resolve a buff/effect reference using the active game's rules."""
+        return self.active_game.reference_guid(tag, node)
 
     def _template_filter_refresh_from_assets(self, assets_db):
 
@@ -805,10 +670,11 @@ class AnnoModTool(QMainWindow):
         )
         self.current_theme = self.apply_theme(self.current_theme)
 
+        self._active_game = None
         self.assets_db, self.templates_db, self.languages_db = {}, {}, {}
         self.template_library = {}
         self.structure_catalog_list = []
-        self.watchlist_guids = self._load_watchlist_guids()
+        self.watchlist_groups = self._load_watchlist_groups()
         self.current_xml_root = None
         self.block_signals = False
 
@@ -833,12 +699,11 @@ class AnnoModTool(QMainWindow):
         self.lbl_filter = QLabel("Search-Filter")
         self.lbl_filter.setProperty("accentText", True)
         self.cb_search_main_only = QCheckBox("Search only GUID Text")
-        # Only the label is styled. Sizing QCheckBox::indicator would hand the
-        # indicator over to the stylesheet engine, which then draws nothing
-        # because no check mark image is supplied.
-        self.cb_search_main_only.setStyleSheet(
-            "QCheckBox { font-size: 10px; padding-left: 8px; }"
-        )
+        # Colours come from the theme; only the geometry is fixed here.
+        self.cb_search_main_only.setStyleSheet("""
+            QCheckBox { font-size: 10px; padding-left: 8px; }
+            QCheckBox::indicator { width: 12px; height: 12px; }
+        """)
         self.cb_search_main_only.setToolTip("When checked, search is limited to GUID, Display Name, and Template.\nWhen unchecked, all text content within the asset is searched.")
         self.cb_search_main_only.setChecked(True)
         self.btn_template_filter.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -851,14 +716,7 @@ class AnnoModTool(QMainWindow):
         self.btn_buff_filter.setCursor(Qt.CursorShape.PointingHandCursor)
 
         self.btn_export = QPushButton("EXPORT XML")
-        # Explicit call-to-action colour; kept identical across all themes.
-        self.btn_export.setStyleSheet(
-            "QPushButton { background-color: #1b5e20; color: white;"
-            " font-weight: bold; padding: 6px 15px;"
-            " border: 1px solid #2e7d32; border-radius: 4px; }"
-            "QPushButton:hover { background-color: #2e7d32; }"
-            "QPushButton:pressed { background-color: #164a1a; }"
-        )
+        self.btn_export.setStyleSheet("background-color: #1b5e20; color: white; font-weight: bold; padding: 4px 15px;")
         
         export_columns_layout = QHBoxLayout()
 
@@ -1010,7 +868,8 @@ class AnnoModTool(QMainWindow):
         watch_header_layout.setContentsMargins(0, 0, 0, 0)
         watch_header_layout.setSpacing(4)
 
-        watch_header = QLabel(" WATCHLIST")
+        self.watch_header = QLabel(" WATCHLIST")
+        watch_header = self.watch_header
         watch_header.setProperty("sectionHeader", True)
 
         self.btn_watch_add = QPushButton("+")
@@ -1268,7 +1127,9 @@ class AnnoModTool(QMainWindow):
         self.settings_tabs = QTabWidget()
         # Flatter tabs than the main bar so the nesting is visually obvious.
         # Flatter than the main tab bar; the accent is set by apply_theme().
-        self.settings_tabs.setStyleSheet(self._settings_tab_stylesheet())
+        self.settings_tabs.setStyleSheet(
+            "QTabBar::tab { padding: 6px 16px; font-weight: normal; }"
+        )
         set_layout.addWidget(self.settings_tabs)
 
         # --- SETTINGS > GENERAL ---------------------------------------------
@@ -1294,9 +1155,7 @@ class AnnoModTool(QMainWindow):
         self.combo_theme.currentIndexChanged.connect(self._on_theme_selected)
         appearance_layout.addWidget(QLabel("Theme:"))
         appearance_layout.addWidget(self.combo_theme)
-        # unavailable_reason() also covers "installed but no theme files found",
-        # which is what a build without --collect-data qt_themes looks like.
-        if theme_manager.unavailable_reason():
+        if not theme_manager.qt_themes_available():
             hint = QLabel(theme_manager.unavailable_reason())
             hint.setEnabled(False)
             hint.setWordWrap(True)
@@ -1455,13 +1314,18 @@ class AnnoModTool(QMainWindow):
                 highlighter = XMLHighlighter(view.document())
                 self.highlighters.append(highlighter)
 
-        self.append_debug_log(f"[theme] {theme_manager.diagnostics()}")
+        if theme_manager.qt_themes_available():
+            self.append_debug_log(
+                f"[theme] qt-themes ready, "
+                f"{len(theme_manager.list_themes()) - 1} extra themes available."
+            )
+        else:
+            self.append_debug_log(f"[theme] qt-themes unavailable - "
+                                  f"{theme_manager.unavailable_reason()}")
 
         active_path = self.combo_xml_path.currentText()
         if active_path and os.path.exists(active_path):
             self.start_loading(active_path)
-
-        self._prepare_combo_popups()
 
         QTimer.singleShot(0, self._start_version_check)
 
@@ -1573,45 +1437,6 @@ class AnnoModTool(QMainWindow):
             f"Difference {self._diff_cursor + 1} of {len(self._diff_blocks)}", 3000
         )
 
-    def _prepare_combo_popups(self):
-        """Make every combo box popup honour the stylesheet.
-
-        A non-editable QComboBox uses an internal item delegate that ignores
-        `QComboBox QAbstractItemView::item` rules, so popup entries keep the
-        default colours and the disabled group headers are indistinguishable
-        from normal paths. Giving each combo an explicit QListView plus a
-        QStyledItemDelegate restores stylesheet rendering.
-        """
-        for combo in self.findChildren(QComboBox):
-            if combo.property("styledPopup"):
-                continue
-            view = QListView(combo)
-            view.setUniformItemSizes(True)
-            combo.setView(view)
-            combo.setItemDelegate(QStyledItemDelegate(combo))
-            combo.setProperty("styledPopup", True)
-
-    def _settings_tab_stylesheet(self):
-        """Stylesheet for the nested Settings tabs.
-
-        A QTabBar::tab rule that only sets padding would switch the tab bar to
-        stylesheet rendering and drop its background, so the tab has to be
-        described completely.
-        """
-        accent = theme_manager.editor_colors(self.current_theme)["accent"].name()
-        if self.current_theme == theme_manager.ANNO_DARK:
-            base, selected, border = "#252525", "#1e1e1e", "#333"
-        else:
-            base, selected, border = ("palette(window)", "palette(base)",
-                                      "palette(mid)")
-        return (
-            f"QTabBar::tab {{ background: {base}; color: palette(text);"
-            f" border: 1px solid {border}; border-bottom: none;"
-            f" padding: 6px 16px; font-weight: normal; }}"
-            f"QTabBar::tab:selected {{ background: {selected};"
-            f" border-bottom: 2px solid {accent}; }}"
-        )
-
     def _code_view_stylesheet(self):
         """Stylesheet for the read-only XML views, derived from the theme."""
         colors = theme_manager.editor_colors(self.current_theme)
@@ -1661,8 +1486,15 @@ class AnnoModTool(QMainWindow):
             view.setStyleSheet(stylesheet)
 
         self._tree_color_cache = None
+        # Group headers carry explicit brushes, so they must be rebuilt.
+        if hasattr(self, "combo_xml_path"):
+            self._populate_path_selector(self.combo_xml_path)
+            self._sync_guid_compare_paths()
         if getattr(self, "settings_tabs", None) is not None:
-            self.settings_tabs.setStyleSheet(self._settings_tab_stylesheet())
+            self.settings_tabs.setStyleSheet(
+                "QTabBar::tab { padding: 6px 16px; font-weight: normal; }"
+                f"QTabBar::tab:selected {{ border-bottom: 2px solid {colors['accent'].name()}; }}"
+            )
         if getattr(self, "current_xml_root", None) is not None:
             self.refresh_ui_from_xml()
 
@@ -1923,14 +1755,45 @@ class AnnoModTool(QMainWindow):
         if row >= 0:
             self.list_buff_filter_tags.takeItem(row)
 
+    def _game_key_for_path(self, folder):
+        """Game key of a folder, taken from the configured folder lists."""
+        normalised = os.path.normcase(os.path.abspath(folder or ""))
+        for group_key, paths in self.xml_path_groups.items():
+            for path in paths:
+                if os.path.normcase(os.path.abspath(path)) == normalised:
+                    return group_key
+        detected = anno_game.detect_game(folder)
+        if detected is not None:
+            return detected.key
+        return XML_PATH_GROUPS[0][0] if XML_PATH_GROUPS else ""
+
+    def game_for_folder(self, folder):
+        """Game profile of a data folder."""
+        return anno_game.get_game(self._game_key_for_path(folder))
+
+    @property
+    def active_game(self):
+        """Game profile of the currently loaded folder."""
+        cached = getattr(self, "_active_game", None)
+        if cached is not None:
+            return cached
+        combo = getattr(self, "combo_xml_path", None)
+        return self.game_for_folder(combo.currentText() if combo else "")
+
     def start_loading(self, folder):
 
         if not folder or not os.path.exists(folder):
             return
 
-        self.statusBar().showMessage(f"Loading: {os.path.basename(folder)}...")
+        game = self.game_for_folder(folder)
+        self._active_game = game
+        self.statusBar().showMessage(
+            f"Loading {game.label}: {os.path.basename(folder)}..."
+        )
+        # The watchlist follows the game of the folder being loaded.
+        self.refresh_watchlist()
 
-        self.worker = AnnoLoader(folder)
+        self.worker = AnnoLoader(folder, game)
         self.worker.debug_log.connect(self.append_debug_log)
         self.worker.status.connect(self.statusBar().showMessage)
         self.worker.finished.connect(self.on_data_ready)
@@ -2196,8 +2059,25 @@ class AnnoModTool(QMainWindow):
         lang_dict = self.languages_db.get(self.combo_lang.currentText(), {})
         return lang_dict.get(info['oasis_id']) or lang_dict.get(info.get('visible_tech_name_id')) or info['fallback_name']
 
+    def _update_watchlist_header(self):
+        """Show which game's watchlist is currently displayed."""
+        if not hasattr(self, "watch_header"):
+            return
+        key = self._active_watchlist_key()
+        label = next((group_label for group_key, group_label, _settings_key
+                      in XML_PATH_GROUPS if group_key == key), "")
+        label = label.replace(" XML Files", "").strip()
+        self.watch_header.setText(
+            f" WATCHLIST \u2014 {label}" if label else " WATCHLIST"
+        )
+        self.watch_header.setToolTip(
+            "Anno 117 and Anno 1800 keep separate watchlists.\n"
+            "The list follows the game of the loaded XML folder."
+        )
+
     def refresh_watchlist(self):
 
+        self._update_watchlist_header()
         self.watchlist_table.setRowCount(0)
         self.watchlist_table.setSortingEnabled(False)
 

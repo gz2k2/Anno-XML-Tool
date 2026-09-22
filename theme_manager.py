@@ -15,8 +15,7 @@ Two things make qt-themes awkward to ship:
    does not bundle package data by default, so in a one-file build the theme
    folder is empty and only the built-in theme shows up. The build script
    collects them with `--collect-data qt_themes`; additionally the QT_THEMES
-   environment variable is pointed at the bundled folder here, which is the
-   officially supported way to add theme search paths.
+   environment variable is pointed at the bundled folder here.
 
     pip install qt-themes
 """
@@ -30,7 +29,7 @@ import types
 from PyQt6.QtGui import QColor, QPalette
 from PyQt6.QtWidgets import QApplication
 
-# Environment variable qt-themes reads for additional theme search paths.
+#: Environment variable qt-themes reads for additional theme search paths.
 QT_THEMES_ENV = "QT_THEMES"
 
 
@@ -58,11 +57,9 @@ def _install_qtpy_shim() -> None:
 def _candidate_theme_dirs() -> list[str]:
     """Folders that may hold the bundled qt-themes *.json files."""
     roots = []
-    # PyInstaller one-file: everything is unpacked below sys._MEIPASS.
     meipass = getattr(sys, "_MEIPASS", "")
     if meipass:
         roots.append(meipass)
-    # PyInstaller one-folder / plain script: next to the executable.
     if getattr(sys, "frozen", False):
         roots.append(os.path.dirname(sys.executable))
     roots.append(os.path.dirname(os.path.abspath(__file__)))
@@ -80,7 +77,10 @@ def _register_bundled_themes() -> str:
     for path in _candidate_theme_dirs():
         if not os.path.isdir(path):
             continue
-        if not any(name.endswith(".json") for name in os.listdir(path)):
+        try:
+            if not any(name.endswith(".json") for name in os.listdir(path)):
+                continue
+        except OSError:
             continue
         parts = [part for part in existing.split(os.pathsep) if part]
         if path not in parts:
@@ -105,8 +105,6 @@ ANNO_DARK = "anno_dark"
 ANNO_DARK_LABEL = "Anno Dark (built-in)"
 DEFAULT_ACCENT = "#81c784"
 
-# Theme names shipped with qt-themes 0.4, in drop-down order. Unknown names are
-# ignored and any extra theme found on disk is appended automatically.
 _PREFERRED_ORDER = (
     "modern_dark", "modern_light",
     "one_dark_two", "atom_one", "monokai", "dracula", "nord", "blender",
@@ -129,6 +127,14 @@ ANNO_DARK_STYLESHEET = """
     QPushButton:hover { background-color: #444; }
     QPushButton:disabled { color: #666; border-color: #333; }
     QLineEdit, QComboBox { background-color: #1e1e1e; border: 1px solid #444; padding: 4px; color: white; }
+    QComboBox QAbstractItemView {
+        background-color: #1e1e1e; color: #d4d4d4; border: 1px solid #444; outline: 0;
+        selection-background-color: #264f78; selection-color: #ffffff;
+    }
+    QComboBox QAbstractItemView::item { min-height: 22px; padding: 3px 8px; border: none; }
+    QMenu { background-color: #1e1e1e; color: #e0e0e0; border: 1px solid #444; }
+    QMenu::item { padding: 5px 24px 5px 12px; background: transparent; }
+    QMenu::item:selected { background-color: #264f78; }
     QTabWidget::pane { border: 1px solid #333; }
     QTabBar::tab { background: #252525; padding: 10px 20px; border: 1px solid #333; border-bottom: none; }
     QTabBar::tab:selected { background: #1e1e1e; border-bottom: 2px solid #1b5e20; }
@@ -147,15 +153,14 @@ ANNO_DARK_STYLESHEET = """
     QLabel[accentText="true"] { color: #81c784; font-weight: bold; padding-left: 8px; }
 """
 
-# Rules for qt-themes. Colours are taken from the palette so the theme stays
-# in control, but every styled widget must be described COMPLETELY.
+# Rules for qt-themes. Colours come from the palette so the theme stays in
+# control, but every styled widget must be described COMPLETELY.
 #
 # Qt quirk: as soon as a single stylesheet property is set on a widget class,
 # that widget stops being drawn by the native/Fusion style and is rendered by
-# the stylesheet engine instead. Properties that are not specified then fall
-# back to "nothing" rather than to the style default - a QPushButton with only
-# `padding` and `border-radius` therefore loses its background and border and
-# shows up as bare text. Hence the explicit background/border/state rules.
+# the stylesheet engine instead. Unspecified properties then fall back to
+# "nothing" rather than to the style default - a QPushButton with only
+# `padding` and `border-radius` loses its background and shows as bare text.
 THEMED_STYLESHEET = """
     QMainWindow, QWidget {{ font-family: 'Segoe UI', sans-serif; }}
     QTableWidget, QTreeWidget, QTextEdit, QPlainTextEdit, QListWidget {{
@@ -211,8 +216,12 @@ THEMED_STYLESHEET = """
        Touching either subcontrol makes the stylesheet engine take over its
        rendering, and without an `image:` it then draws no arrow at all. */
 
-    /* The popup is a separate top-level view and does not inherit the
-       combo box rule, so it has to be styled on its own. */
+    /* The popup is a separate top-level view and does not inherit the combo
+       box rule, so it has to be styled on its own. Group headers are NOT
+       styled via ::item:disabled - Qt paints disabled items with the
+       greyed-out palette group and ignores any colour set here. The viewer
+       therefore keeps those items enabled and paints them with explicit
+       foreground/background brushes instead. */
     QComboBox QAbstractItemView {{
         background-color: palette(base);
         color: palette(text);
@@ -223,18 +232,12 @@ THEMED_STYLESHEET = """
     }}
     QComboBox QAbstractItemView::item {{
         min-height: 22px;
-        padding: 2px 6px;
+        padding: 3px 8px;
         border: none;
     }}
     QComboBox QAbstractItemView::item:selected {{
         background-color: palette(highlight);
         color: palette(highlighted-text);
-    }}
-    /* Disabled entries are used as group headers in the folder selectors. */
-    QComboBox QAbstractItemView::item:disabled {{
-        color: {accent};
-        background-color: palette(alternate-base);
-        font-weight: bold;
     }}
 
     /* Context menus are top-level windows and need their own rule. */
@@ -249,9 +252,7 @@ THEMED_STYLESHEET = """
         color: palette(highlighted-text);
     }}
     QMenu::item:disabled {{ color: palette(mid); }}
-    QMenu::separator {{
-        height: 1px; background: palette(mid); margin: 4px 8px;
-    }}
+    QMenu::separator {{ height: 1px; background: palette(mid); margin: 4px 8px; }}
 
     QToolTip {{
         background-color: palette(base);
@@ -280,14 +281,14 @@ THEMED_STYLESHEET = """
     }}
     QGroupBox::title {{
         subcontrol-origin: margin; subcontrol-position: top left;
-        left: 8px; padding: 0 4px; color: {accent};
+        left: 8px; padding: 0 4px; color: {header};
     }}
 
     QLabel[sectionHeader="true"] {{
         background-color: palette(alternate-base); padding: 4px; font-weight: bold;
-        border: 1px solid palette(mid); color: {accent};
+        border: 1px solid palette(mid); color: {header};
     }}
-    QLabel[accentText="true"] {{ color: {accent}; font-weight: bold; padding-left: 8px; }}
+    QLabel[accentText="true"] {{ color: {header}; font-weight: bold; padding-left: 8px; }}
 """
 
 _default_palette: QPalette | None = None
@@ -363,6 +364,98 @@ def is_valid(key: str) -> bool:
 
 
 # --------------------------------------------------------------------------
+# Colour helpers
+# --------------------------------------------------------------------------
+def relative_luminance(color: QColor) -> float:
+    """WCAG relative luminance of a colour."""
+    channels = []
+    for value in (color.redF(), color.greenF(), color.blueF()):
+        channels.append(value / 12.92 if value <= 0.03928
+                        else ((value + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+
+
+def contrast_ratio(first: QColor, second: QColor) -> float:
+    """WCAG contrast ratio between two colours (1.0 - 21.0)."""
+    light, dark = sorted((relative_luminance(first), relative_luminance(second)),
+                         reverse=True)
+    return (light + 0.05) / (dark + 0.05)
+
+
+def is_dark(color: QColor) -> bool:
+    """Relative luminance test used to pick diff colour intensities."""
+    return relative_luminance(color) < 0.5
+
+
+def mix(color: QColor, background: QColor, weight: float) -> QColor:
+    """Blend *color* over *background*; weight 0 -> background, 1 -> color."""
+    return QColor(
+        round(background.red() + (color.red() - background.red()) * weight),
+        round(background.green() + (color.green() - background.green()) * weight),
+        round(background.blue() + (color.blue() - background.blue()) * weight),
+    )
+
+
+def readable_on(color: QColor, background: QColor, min_ratio: float = 4.5) -> QColor:
+    """Push *color* away from *background* until it is comfortably readable.
+
+    Theme accents are picked to look good as a thin underline, not as text on
+    a popup background. On several themes they end up nearly invisible - too
+    dark on a dark base, too light on a light one - so the lightness is
+    shifted step by step until the WCAG target is met. Hue and saturation are
+    preserved, so the result still reads as the theme accent.
+    """
+    if contrast_ratio(color, background) >= min_ratio:
+        return QColor(color)
+
+    hue, saturation, lightness, alpha = QColor(color).getHslF()
+    step = 0.04 if is_dark(background) else -0.04
+
+    for _ in range(25):
+        lightness = min(1.0, max(0.0, lightness + step))
+        candidate = QColor.fromHslF(hue, saturation, lightness, alpha)
+        if contrast_ratio(candidate, background) >= min_ratio:
+            return candidate
+        if lightness in (0.0, 1.0):
+            break
+
+    return QColor("#ffffff") if is_dark(background) else QColor("#000000")
+
+
+def popup_background(key: str) -> QColor:
+    """Background of a combo box popup for the given theme."""
+    if key == ANNO_DARK:
+        return QColor("#1e1e1e")
+    app = QApplication.instance()
+    palette = app.palette() if app is not None else QPalette()
+    return palette.base().color()
+
+
+def header_color(key: str) -> QColor:
+    """Readable text colour for group headers and accent labels."""
+    colors = editor_colors(key)
+    return readable_on(colors["accent"], popup_background(key), 5.0)
+
+
+def header_background(key: str) -> QColor:
+    """Band colour behind a group header inside a popup."""
+    background = popup_background(key)
+    # A visible but subtle step away from the popup background.
+    return background.lighter(160) if is_dark(background) else background.darker(112)
+
+
+def combo_header_color(key: str) -> QColor:
+    """Readable text colour for a group header in a combo box popup.
+
+    Measured against :func:`header_background`, not against the popup
+    background: the header text is drawn on top of the band, and on a dark
+    theme that band is noticeably lighter than the popup itself.
+    """
+    accent = editor_colors(key)["accent"]
+    return readable_on(accent, header_background(key), 5.0)
+
+
+# --------------------------------------------------------------------------
 # Applying
 # --------------------------------------------------------------------------
 def _theme_accent(key: str) -> str:
@@ -421,7 +514,10 @@ def apply_theme(window, key: str) -> str:
         except Exception:
             # A broken theme file must never leave the UI unstyled.
             return apply_theme(window, ANNO_DARK)
-        app.setStyleSheet(THEMED_STYLESHEET.format(accent=_theme_accent(key)))
+        app.setStyleSheet(THEMED_STYLESHEET.format(
+            accent=_theme_accent(key),
+            header=header_color(key).name(),
+        ))
 
     return key
 
@@ -438,10 +534,3 @@ def editor_colors(key: str) -> dict:
     return {"background": palette.base().color(),
             "text": palette.text().color(),
             "accent": QColor(_theme_accent(key))}
-
-
-def is_dark(color: QColor) -> bool:
-    """Relative luminance test used to pick diff colour intensities."""
-    return (0.2126 * color.redF()
-            + 0.7152 * color.greenF()
-            + 0.0722 * color.blueF()) < 0.5
