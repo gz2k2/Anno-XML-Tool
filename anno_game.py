@@ -41,6 +41,19 @@ from __future__ import annotations
 import os
 import xml.etree.ElementTree as ET
 
+#: Cache for :meth:`AnnoGame.find_files`, keyed by (game key, folder).
+_FILE_CACHE: dict = {}
+
+
+def clear_file_cache() -> None:
+    """Forget every cached directory scan.
+
+    Must be called whenever files appear or vanish below a data folder, i.e.
+    after an RdaConsole extraction or when the user adds a new folder.
+    """
+    _FILE_CACHE.clear()
+
+
 # Text ids used to be detected as "any numeric leaf value", excluding only a
 # couple of tags. That wrongly turned plain numbers into text lookups:
 # <MaximumHitPoints>2500</MaximumHitPoints> resolved against texts_*.xml and
@@ -98,7 +111,25 @@ class AnnoGame:
 
     # -- discovery -------------------------------------------------------
     def find_files(self, folder: str) -> dict:
-        """Locate the data files of this game below *folder*."""
+        """Locate the data files of this game below *folder*.
+
+        Cached per (game, folder). ``find_files`` used to run a full
+        ``os.walk`` for every caller - game detection, the loader and the
+        Anno 1800 properties lookup each scanned the whole tree again.
+        Call :func:`clear_file_cache` after new files were extracted.
+        """
+        cache_key = (self.key or type(self).__name__, os.path.abspath(folder or ""))
+        cached = _FILE_CACHE.get(cache_key)
+        if cached is not None:
+            # Hand out a copy: subclasses add their own keys to the dict.
+            return dict(cached)
+
+        files = self._scan_files(folder)
+        _FILE_CACHE[cache_key] = dict(files)
+        return files
+
+    def _scan_files(self, folder: str) -> dict:
+        """Uncached directory scan - the override point for extra data files."""
         assets, templates, texts = "", "", []
 
         for root, _dirs, files in os.walk(folder):

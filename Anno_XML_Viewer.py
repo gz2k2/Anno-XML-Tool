@@ -39,6 +39,10 @@ XML_PATH_GROUPS = anno_game.path_groups()
 
 # Union of the buff/effect tags all games care about. The per-game lists
 # live in the anno_* modules.
+#: Upper bound for the parsed-asset cache. Purely a click-path cache, so a
+#: few hundred entries cover every realistic navigation sequence.
+ELEMENT_CACHE_LIMIT = 512
+
 DEFAULT_BUFF_FILTER_TAGS = sorted(
     {tag for game in anno_game.all_games() for tag in game.default_buff_tags}
 )
@@ -60,25 +64,13 @@ def resource_path(relative_path: str) -> str:
 
 
 def indent(elem, level=0):
+    """Pretty-print an element tree in place.
 
-    i = "\n" + level * "  "
-
-    if len(elem):
-        if not elem.text or not elem.text.strip():
-            elem.text = i + "  "
-
-        if not elem.tail or not elem.tail.strip():
-            elem.tail = i
-
-        for child in elem:
-            indent(child, level + 1)
-
-        if not child.tail or not child.tail.strip():
-            child.tail = i
-
-    else:
-        if level and (not elem.tail or not elem.tail.strip()):
-            elem.tail = i
+    Delegates to the standard library. The hand-written recursive version
+    that used to live here (and a second copy in guid_compare) predates
+    ``ET.indent``, which ships with Python 3.9 and is implemented in C.
+    """
+    ET.indent(elem, space="  ", level=level)
 
 
 def rda_extraction_worker(result_queue, app_dir, game_name, game_folder, output_folder):
@@ -123,6 +115,13 @@ class XMLHighlighter(QSyntaxHighlighter):
     so the palette is now supplied by the theme manager.
     """
 
+    # Compiled once instead of per highlighted line. re.finditer with a
+    # literal pattern goes through the regex cache on every call, and
+    # highlightBlock runs for every visible line of every XML view.
+    _RE_COMMENT = re.compile(r"<!--.*?-->")
+    _RE_TAG = re.compile(r"<(/?[\w:]+)")
+    _RE_TEXT = re.compile(r">([^<]+)<")
+
     def __init__(self, parent=None, colors=None):
 
         super().__init__(parent)
@@ -163,16 +162,16 @@ class XMLHighlighter(QSyntaxHighlighter):
         if not text:
             return
 
-        for match in re.finditer(r"<!--.*?-->", text):
+        for match in self._RE_COMMENT.finditer(text):
             self.setFormat(match.start(), match.end() - match.start(),
                            self.styles["comment"])
             return
 
-        for match in re.finditer(r"<(/?[\w:]+)", text):
+        for match in self._RE_TAG.finditer(text):
             self.setFormat(match.start(), match.end() - match.start(),
                            self.styles["tag"])
 
-        for match in re.finditer(r">([^<]+)<", text):
+        for match in self._RE_TEXT.finditer(text):
             self.setFormat(match.start(1), match.end(1) - match.start(1),
                            self.styles["text"])
 
@@ -373,7 +372,61 @@ class AnnoModTool(QMainWindow):
 
         folder = self.combo_xml_path.itemText(index)
         if folder and os.path.exists(folder):
+            # Persist right here, not only in save_settings(): picking a
+            # folder in the toolbar is the normal way to switch data sets,
+            # and it has to survive a restart on its own.
+            self._remember_active_path(folder)
             self.start_loading(folder)
+
+    def _remember_active_path(self, folder):
+        """Store the selected XML folder so the next start reopens it.
+
+        Choosing a folder in the toolbar used to load it without writing the
+        choice to config.ini - only "Save Settings" and the folder lists in
+        the settings tab did that. The next start therefore restored whatever
+        had been active the last time somebody pressed Save.
+        """
+        folder = str(folder or "").strip()
+        if not folder:
+            return
+
+        if str(self.settings.value("Paths/xml_path", "") or "") == folder:
+            return
+
+        self.settings.setValue("Paths/xml_path", folder)
+        # The game group is stored next to it, so the watchlist and the game
+        # profile are known before the folder has been scanned again.
+        self.settings.setValue("Paths/xml_game", self._game_key_for_path(folder))
+        self.settings.sync()
+
+    def _restore_saved_path(self, saved_path):
+        """Preselect the folder that was active when the app was closed.
+
+        Returns a message for the engine log, or "" when there is nothing to
+        report - the log widget does not exist yet at this point in __init__.
+        """
+        saved_path = str(saved_path or "").strip()
+        if not saved_path:
+            return ""
+
+        index = self.combo_xml_path.findText(saved_path)
+        if index >= 0:
+            self.combo_xml_path.setCurrentIndex(index)
+            return f"[startup] Restored XML folder: {saved_path}"
+
+        # Land on a real entry, never on a group header. _populate_path_selector
+        # already does this, but relying on call order here would be fragile.
+        self.combo_xml_path.setCurrentIndex(
+            self._first_selectable_index(self.combo_xml_path)
+        )
+
+        if not os.path.isdir(saved_path):
+            return (f"[startup] Last used XML folder no longer exists: "
+                    f"{saved_path} - using the first configured folder instead.")
+
+        # Still on disk, but removed from every game group in the settings.
+        return (f"[startup] Last used XML folder is not listed any more: "
+                f"{saved_path} - using the first configured folder instead.")
 
     def remove_xml_path(self, group_key):
         """Remove the selected folder from one game's XML folder list."""
@@ -679,6 +732,10 @@ class AnnoModTool(QMainWindow):
         config_path = os.path.join(base_dir, "config.ini")
         self.settings = QSettings(config_path, QSettings.Format.IniFormat)
 
+        # Parsed XML folders are indexed here so a known folder does not have
+        # to be re-parsed on every start. Safe to delete at any time.
+        self.cache_dir = os.path.join(base_dir, "cache")
+
         self.list_xml_paths_by_group = {}
         self.xml_path_groups = self._load_xml_path_groups()
         self.xml_paths = self._flat_xml_paths()
@@ -691,6 +748,13 @@ class AnnoModTool(QMainWindow):
 
         self._active_game = None
         self.assets_db, self.templates_db, self.languages_db = {}, {}, {}
+        self.worker = None
+        # guid -> parsed <Asset> element, so the Buffs pane and the export do
+        # not run ET.fromstring() on the same asset over and over again.
+        self._element_cache = {}
+        self._search_rows = None
+        self._search_names = {}
+        self._search_cache_lang = None
         # referenced GUID -> assets referencing it, filled by the loader.
         self.reverse_index = {}
         self.template_library = {}
@@ -789,9 +853,8 @@ class AnnoModTool(QMainWindow):
         self.combo_xml_path = QComboBox()
         self.combo_xml_path.setFixedWidth(300)
         self._populate_path_selector(self.combo_xml_path)
-        saved_path_index = self.combo_xml_path.findText(str(saved_path).strip())
-        if saved_path_index >= 0:
-            self.combo_xml_path.setCurrentIndex(saved_path_index)
+        # Reported once the engine log exists; see the end of __init__.
+        self._startup_message = self._restore_saved_path(saved_path)
         self.combo_xml_path.setToolTip("Select the XML data folder to use")
 
         nav.addWidget(self.search)
@@ -1289,11 +1352,11 @@ class AnnoModTool(QMainWindow):
         xml_settings_layout.addStretch()
 
         # SEARCH DEBOUNCE ##############################################################
-        # Filtern erst, wenn 500 ms lang keine Eingabe mehr erfolgt ist. Ohne das
+        # Filtern erst, wenn 200 ms lang keine Eingabe mehr erfolgt ist. Ohne das
         # laeuft apply_filter() bei jedem Tastendruck ueber die komplette assets_db.
         self._search_debounce = QTimer(self)
         self._search_debounce.setSingleShot(True)
-        self._search_debounce.setInterval(500)
+        self._search_debounce.setInterval(200)
         self._search_debounce.timeout.connect(self.apply_filter)
 
         # SIGNALS ######################################################################
@@ -1345,10 +1408,27 @@ class AnnoModTool(QMainWindow):
                 self.highlighters.append(highlighter)
 
         self.append_debug_log(f"[theme] {theme_manager.diagnostics()}")
+        if self._startup_message:
+            self.append_debug_log(self._startup_message)
 
         active_path = self.combo_xml_path.currentText()
         if active_path and os.path.exists(active_path):
+            # Write back what is really being opened. When the stored folder
+            # had vanished and the selector fell back to another one, the
+            # setting would otherwise keep pointing at the dead path.
+            self._remember_active_path(active_path)
             self.start_loading(active_path)
+        elif active_path:
+            self.append_debug_log(
+                f"[startup] Configured folder is not reachable: {active_path}"
+            )
+            self.statusBar().showMessage(
+                "The configured XML folder could not be opened", 8000
+            )
+        else:
+            self.statusBar().showMessage(
+                "No XML folder configured - add one under Settings > XML Settings", 8000
+            )
 
         QTimer.singleShot(0, self._start_version_check)
 
@@ -1376,11 +1456,24 @@ class AnnoModTool(QMainWindow):
             self.compare_right_xml.set_message("Enter a GUID to compare.")
             return
 
-        for side, folder, preview in (
+        sides = (
             ("left", self.compare_left_path.currentText(), self.compare_left_xml),
             ("right", self.compare_right_path.currentText(), self.compare_right_xml),
-        ):
+        )
+
+        pending = []
+        for side, folder, preview in sides:
+            # The folder that is already open needs no background scan at all:
+            # its assets are in memory. Only the other side has to be read
+            # from disk.
+            local = self._loaded_asset_xml(folder, guid)
+            if local is not None:
+                self._show_guid_compare_result(request_id, side, local, preview)
+                continue
             preview.set_message(f"Searching for GUID {guid}...")
+            pending.append((side, folder, preview))
+
+        for side, folder, preview in pending:
             worker = GuidCompareLoader(request_id, folder, guid, self)
 
             # The search result arrives on `result`. `finished` is QThread's own
@@ -1397,6 +1490,27 @@ class AnnoModTool(QMainWindow):
             )
             self._guid_compare_workers.append(worker)
             worker.start()
+
+    def _loaded_asset_xml(self, folder, guid):
+        """XML of a GUID when *folder* is the folder that is currently open.
+
+        GuidCompareLoader streams every XML file of a folder from disk for
+        each comparison. For the active folder that work is redundant - the
+        asset is already parsed and sits in assets_db.
+        """
+        if not folder or not self.assets_db:
+            return None
+
+        active = self.combo_xml_path.currentText()
+        if os.path.normcase(os.path.abspath(folder)) != os.path.normcase(
+                os.path.abspath(active or "")):
+            return None
+
+        cached = self._asset_element(str(guid).strip())
+        if cached is None:
+            return f"GUID {guid} not found in {folder}"
+
+        return f"<!-- source: {self.active_game.asset_file} (loaded) -->\n" + cached[1]
 
     def _retire_guid_compare_worker(self, worker):
         """Drop a finished worker. Only ever called from QThread.finished,
@@ -1635,6 +1749,10 @@ class AnnoModTool(QMainWindow):
         if not folder:
             return
 
+        # A folder the user picks by hand may have been filled after the last
+        # scan, so the cached listing for it is dropped.
+        anno_game.clear_file_cache()
+
         existing = [widget.item(row).text() for row in range(widget.count())]
         if folder not in existing:
             widget.addItem(folder)
@@ -1750,6 +1868,8 @@ class AnnoModTool(QMainWindow):
 
     def _finish_rda_extraction(self, args, returncode, output):
         self._cleanup_rda_extraction()
+        # Newly extracted files must not be hidden by a cached folder scan.
+        anno_game.clear_file_cache()
         self.append_debug_log("[rda] Running: " + " ".join(f'\"{arg}\"' for arg in args))
         self.append_debug_log(f"[rda] Exit code: {returncode}\n{output.strip()}")
         if returncode not in (0, NET_CONSOLE_EXIT_CODE):
@@ -1856,11 +1976,45 @@ class AnnoModTool(QMainWindow):
         # The watchlist follows the game of the folder being loaded.
         self.refresh_watchlist()
 
-        self.worker = AnnoLoader(folder, game)
+        # A loader of a previously selected folder keeps parsing in the
+        # background and would overwrite the new data when it finishes.
+        self._stop_loader()
+
+        self.worker = AnnoLoader(
+            folder, game,
+            cache_dir=self.cache_dir,
+            preferred_language=self.combo_lang.currentText()
+            or str(self.settings.value("Paths/default_lang", "english") or ""),
+            parent=self,
+        )
         self.worker.debug_log.connect(self.append_debug_log)
         self.worker.status.connect(self.statusBar().showMessage)
-        self.worker.finished.connect(self.on_data_ready)
+        # `loaded` carries the result, `finished` is QThread's own signal and
+        # only fires after run() has returned - the only safe moment to free
+        # the thread object.
+        self.worker.loaded.connect(self.on_data_ready)
+        self.worker.finished.connect(
+            lambda worker=self.worker: self._retire_loader(worker)
+        )
         self.worker.start()
+
+    def _stop_loader(self):
+        """Detach and stop the loader of a previous folder, if any."""
+        worker = getattr(self, "worker", None)
+        if worker is None:
+            return
+        try:
+            worker.loaded.disconnect(self.on_data_ready)
+        except TypeError:
+            pass
+        worker.requestInterruption()
+        self.worker = None
+
+    def _retire_loader(self, worker):
+        """Free a loader thread; only ever called from QThread.finished."""
+        if getattr(self, "worker", None) is worker:
+            self.worker = None
+        worker.deleteLater()
 
     def init_loading(self):
 
@@ -1885,11 +2039,27 @@ class AnnoModTool(QMainWindow):
 
         self.block_signals = True
 
+        # The catalog logs through the loader's debug_log signal while it is
+        # being built. That signal dies with the worker thread, so the sink
+        # is handed over to the window before anything else touches the
+        # catalog - a language loaded later would otherwise emit into a
+        # destroyed QObject and abort the application.
+        previous = getattr(self, "languages_db", None)
+        if previous is not None and hasattr(previous, "detach_log"):
+            previous.detach_log()
+        if hasattr(langs, "set_log"):
+            langs.set_log(self.append_debug_log)
+
         self.assets_db, self.templates_db, self.languages_db = a, t, langs
         self.reverse_index = rev_index or {}
         self.structure_catalog_list = sorted(list(cat_list)) 
         self.template_library = t_lib
         self.value_catalog = v_cat
+
+        # New data set: both the search strings and the parsed <Asset>
+        # elements of the previous folder are worthless now.
+        self._invalidate_search_cache()
+        self._element_cache.clear()
 
         self.combo_lang.clear()
         self.combo_lang.addItems(sorted(langs.keys()))
@@ -2024,6 +2194,29 @@ class AnnoModTool(QMainWindow):
         if current_row >= 0:
             selected_guid = self.table.item(current_row, 0).text()
 
+        # The display names depend on the language, so every cached search
+        # string is stale. texts_*.xml is parsed here on first use.
+        language = self.combo_lang.currentText()
+        catalog = self.languages_db
+        if language and hasattr(catalog, "is_loaded") and not catalog.is_loaded(language):
+            self.statusBar().showMessage(f"Loading texts for {language}...")
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                catalog.get(language, {})
+            except Exception as exc:
+                # An unreadable text file must not take the window with it.
+                # Untranslated assets simply fall back to their plain name.
+                self.append_debug_log(
+                    f"ERROR: texts for {language} could not be loaded: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                self.statusBar().showMessage(
+                    f"Texts for {language} could not be loaded", 5000
+                )
+            finally:
+                QApplication.restoreOverrideCursor()
+
+        self._invalidate_search_cache()
         self.apply_filter()
         self.refresh_watchlist()
 
@@ -2039,6 +2232,72 @@ class AnnoModTool(QMainWindow):
         """Restart the debounce timer; the filter runs once typing pauses."""
         self._search_debounce.start()
 
+    def _invalidate_search_cache(self):
+        """Drop the precomputed search rows, e.g. after a language change."""
+        self._search_rows = None
+        self._search_names = {}
+        self._search_cache_lang = None
+
+    def _search_rows_for(self, language):
+        """Flat search table for one language.
+
+        Each row is ``(guid, display_name, template, main_text, full_text)``
+        with everything already lower-cased.
+
+        apply_filter used to rebuild these strings for every asset on every
+        run: three to four ``str.lower()`` calls plus a list per asset,
+        several hundred thousand times per keystroke. They only depend on the
+        asset data and the selected language, so they are built once and then
+        reused. A flat list of tuples also avoids the dict lookup and the
+        record ``__getitem__`` call that iterating assets_db costs per row.
+        """
+        rows = getattr(self, "_search_rows", None)
+        if rows is not None and getattr(self, "_search_cache_lang", None) == language:
+            return rows
+
+        lang_dict = self.languages_db.get(language, {})
+        rows = []
+        names = {}
+
+        for guid, info in self.assets_db.items():
+            template = info["template_name"]
+            fallback = info["fallback_name"]
+            display_name = (lang_dict.get(info["oasis_id"])
+                            or lang_dict.get(info.get("visible_tech_name_id"))
+                            or fallback)
+
+            parts = [guid, template, display_name]
+            if fallback != "N/A":
+                parts.append(fallback)
+            main_text = "\n".join(parts).lower()
+
+            # The optional part (InfoDescription and friends) is appended, so
+            # the unchecked "Search only GUID Text" case is a plain superset
+            # and no second join is needed at filter time.
+            extra = [lang_dict.get(text_id, "") for text_id in info.get("text_ids", ())]
+            extra = [text for text in extra if text]
+            full_text = (main_text + "\n" + "\n".join(extra).lower()) if extra else main_text
+
+            rows.append((guid, display_name, template, main_text, full_text))
+            names[guid] = display_name
+
+        self._search_rows = rows
+        self._search_names = names
+        self._search_cache_lang = language
+        return rows
+
+    @staticmethod
+    def _parse_query(query_text):
+        """Split a query into (include terms, exclude terms)."""
+        include, exclude = [], []
+        for part in query_text.split():
+            is_exclude = part.startswith("-")
+            term = part[1:] if (is_exclude or part.startswith("+")) else part
+            if not term:
+                continue
+            (exclude if is_exclude else include).append(term)
+        return include, exclude
+
     def apply_filter(self):
 
         # A pending debounce run would repeat the work right after a direct
@@ -2047,88 +2306,64 @@ class AnnoModTool(QMainWindow):
         if timer is not None:
             timer.stop()
 
-        query_text = self.search.text().lower()
-        parts = query_text.split()
-
-        template_filter = None
-
-        if getattr(self, "_template_filter_selected", None):
-            template_filter = self._template_filter_selected
-
-        self.table.setRowCount(0)
-        self.table.setSortingEnabled(False)
-
         current_lang = self.combo_lang.currentText()
-        if not current_lang: return
-        lang_dict = self.languages_db.get(current_lang, {})
-        
-        for guid, info in self.assets_db.items():
-            if template_filter is not None and info["template_name"] not in template_filter:
-                continue
+        if not current_lang:
+            return
 
-            display_name = lang_dict.get(info['oasis_id']) or lang_dict.get(info.get('visible_tech_name_id')) or info['fallback_name']
-            
-            # Initialize searchable_content with core elements that are always searched
-            searchable_content = [
-                guid.lower(),
-                info['template_name'].lower(),
-                display_name.lower() # This is the primary display name (translated or fallback)
-            ]
+        include, exclude = self._parse_query(self.search.text().lower())
+        rows = self._search_rows_for(current_lang)
+        # 3 = GUID/name/template only, 4 = plus every other translated text.
+        column = 3 if self.cb_search_main_only.isChecked() else 4
 
-            # Always include the raw content of the <Name> tag for search,
-            # as it's a direct identifier for the asset.
-            # Avoid adding "n/a" if fallback_name is not set.
-            name = display_name.lower()
-            template = info['template_name'].lower()
-            
-            if info['fallback_name'] != "N/A":
-                fallback_name_lower = info['fallback_name'].lower()
-                if fallback_name_lower not in searchable_content: # Prevent duplicates if display_name was already fallback_name
-                    searchable_content.append(fallback_name_lower)
+        # One list comprehension per term instead of one nested loop over all
+        # terms per asset: every additional term only looks at the rows that
+        # survived the previous one.
+        selected = getattr(self, "_template_filter_selected", None)
+        all_templates = getattr(self, "_all_template_names", None)
+        if selected and all_templates is not None and len(selected) < len(all_templates):
+            rows = [row for row in rows if row[2] in selected]
 
-            # If the "Search only GUID Text" checkbox is unchecked,
-            # add all other text references (like InfoDescription).
-            if not self.cb_search_main_only.isChecked():
-                for tid in info.get('text_ids', []):
-                    text_from_tid = lang_dict.get(tid, "").lower()
-                    if text_from_tid and text_from_tid not in searchable_content:
-                        searchable_content.append(text_from_tid)
+        for term in include:
+            rows = [row for row in rows if term in row[column]]
+        for term in exclude:
+            rows = [row for row in rows if term not in row[column]]
 
-            asset_match = True
+        # Fill in one go: insertRow() forced Qt to re-layout the whole table
+        # for every single hit.
+        self.table.setSortingEnabled(False)
+        self.table.setUpdatesEnabled(False)
+        self.table.clearContents()
+        self.table.setRowCount(len(rows))
 
-            for part in parts:
-                is_exclude = part.startswith('-')
-                term = part[1:] if (is_exclude or part.startswith('+')) else part
+        for row_index, (guid, display_name, template, _main, _full) in enumerate(rows):
+            guid_item = QTableWidgetItem()
+            if guid.isdigit():
+                guid_item.setData(Qt.ItemDataRole.DisplayRole, int(guid))
+            else:
+                guid_item.setText(guid)
 
-                if not term: continue
-                
-                found = any(term in text for text in searchable_content)
-                if (is_exclude and found) or (not is_exclude and not found):
-                    asset_match = False
-                    break
+            self.table.setItem(row_index, 0, guid_item)
+            self.table.setItem(row_index, 1, QTableWidgetItem(display_name))
+            self.table.setItem(row_index, 2, QTableWidgetItem(template))
 
-            if asset_match:
-                row = self.table.rowCount()
-                self.table.insertRow(row)
-                
-                guid_item = QTableWidgetItem()
-
-                if guid.isdigit():
-                    guid_item.setData(Qt.ItemDataRole.DisplayRole, int(guid))
-                else:
-                    guid_item.setText(guid)
-
-                self.table.setItem(row, 0, guid_item)
-                self.table.setItem(row, 1, QTableWidgetItem(display_name))
-                self.table.setItem(row, 2, QTableWidgetItem(info['template_name']))
-
+        self.table.setUpdatesEnabled(True)
         self.table.setSortingEnabled(True)
+        self.statusBar().showMessage(
+            f"{len(rows)} of {len(self.assets_db)} assets shown", 3000
+        )
 
     def _display_name_for_guid(self, guid):
 
         info = self.assets_db.get(guid)
         if not info:
             return "Missing asset"
+
+        # The name was already resolved when the search rows were built.
+        cached = getattr(self, "_search_names", None)
+        if cached:
+            name = cached.get(guid)
+            if name is not None:
+                return name
 
         lang_dict = self.languages_db.get(self.combo_lang.currentText(), {})
         return lang_dict.get(info['oasis_id']) or lang_dict.get(info.get('visible_tech_name_id')) or info['fallback_name']
@@ -2223,6 +2458,40 @@ class AnnoModTool(QMainWindow):
         self.refresh_watchlist()
         self.statusBar().showMessage(f"Removed GUID {guid} from watchlist", 3000)
 
+    def _asset_element(self, guid):
+        """Parsed, pretty-printed <Asset> element of a GUID (cached).
+
+        The Buffs pane and the export used to call ET.fromstring() plus
+        indent() again for every referenced asset, on every click - the same
+        assets get walked over and over. Cached as (element, pretty text) so
+        neither the parse nor the serialisation is repeated.
+        """
+        cached = self._element_cache.get(guid)
+        if cached is not None:
+            return cached
+
+        info = self.assets_db.get(guid)
+        if info is None:
+            return None
+
+        try:
+            element = ET.fromstring(info["xml"])
+        except ET.ParseError as exc:
+            self.append_debug_log(f"WARNING: GUID {guid} could not be parsed: {exc}")
+            return None
+
+        indent(element)
+        pretty = ET.tostring(element, encoding="unicode")
+
+        # A plain size bound: the cache exists for the current click path,
+        # not as a second copy of the whole data set.
+        if len(self._element_cache) >= ELEMENT_CACHE_LIMIT:
+            self._element_cache.clear()
+
+        cached = (element, pretty)
+        self._element_cache[guid] = cached
+        return cached
+
     def load_asset_details(self, item):
 
         self.block_signals = True
@@ -2239,13 +2508,21 @@ class AnnoModTool(QMainWindow):
         asset = self.assets_db[guid]
         self.current_asset_template = asset['template_name']
 
+        cached = self._asset_element(guid)
+        if cached is None:
+            # A bare "except: pass" used to swallow this silently, including
+            # every error raised further down in the UI update.
+            self.statusBar().showMessage(f"GUID {guid} could not be parsed", 3000)
+            self.block_signals = False
+            return
+
+        self.current_xml_root = cached[0]
         try:
-            self.current_xml_root = ET.fromstring(asset['xml'])
             self.refresh_ui_from_xml()
             self.update_buffs_preview()
             self.update_reverse_search(guid)
-        except:
-            pass
+        except (ET.ParseError, KeyError, ValueError) as exc:
+            self.append_debug_log(f"WARNING: details of GUID {guid} incomplete: {exc}")
 
         self.block_signals = False
 
@@ -2260,7 +2537,6 @@ class AnnoModTool(QMainWindow):
         self.reverse_search_table.setUpdatesEnabled(False)
         self.reverse_search_table.setRowCount(0)
 
-        lang_dict = self.languages_db.get(self.combo_lang.currentText(), {})
         referencing = self.reverse_index.get(guid, [])
 
         # The row count is known up front, so Qt does not have to re-layout
@@ -2272,7 +2548,8 @@ class AnnoModTool(QMainWindow):
             if info is None:
                 continue
 
-            name = lang_dict.get(info['oasis_id']) or lang_dict.get(info.get('visible_tech_name_id')) or info['fallback_name']
+            # Resolved once by the search cache instead of per click.
+            name = self._display_name_for_guid(other_guid)
 
             guid_item = QTableWidgetItem()
             # Prefer numerical sorting for GUIDs if they are digits
@@ -2301,15 +2578,17 @@ class AnnoModTool(QMainWindow):
             def add_to_preview(guid, source_tag):
                 """Helper function to process and add an asset to the preview."""
                 if guid and guid in self.assets_db and guid not in seen_guids:
-                    seen_guids.add(guid) #
-                    
-                    b_xml = ET.fromstring(self.assets_db[guid]["xml"])
-                    indent(b_xml)
-                    
+                    seen_guids.add(guid)
+
+                    cached = self._asset_element(guid)
+                    if cached is None:
+                        return
+                    b_xml, pretty = cached
+
                     buff_content.append(f"<!-- ### {source_tag.upper()}: {guid} ### -->")
-                    buff_content.append(ET.tostring(b_xml, encoding='unicode'))
+                    buff_content.append(pretty)
                     buff_content.append("")
-                    
+
                     collect_recursive(b_xml)
 
             # Examine both list containers and direct fields
@@ -2408,12 +2687,14 @@ class AnnoModTool(QMainWindow):
 
                     def process_guid(b_guid, source_tag):
                         if b_guid and b_guid in self.assets_db and b_guid not in exported_guids:
-                            b_xml = ET.fromstring(self.assets_db[b_guid]["xml"])
+                            cached = self._asset_element(b_guid)
+                            if cached is None:
+                                return
+                            b_xml, pretty = cached
                             exported_guids.add(b_guid)
-                            
-                            indent(b_xml, level=0)
+
                             f.write(f'\n<!-- {source_tag} GUID: {b_guid} -->\n')
-                            f.write(ET.tostring(b_xml, encoding="unicode"))
+                            f.write(pretty)
                             f.write('\n')
                             b_vals = b_xml.find("Values")
 
@@ -2440,11 +2721,27 @@ class AnnoModTool(QMainWindow):
 
 
     def closeEvent(self, event):
-        """Let background GUID searches finish before the window is destroyed."""
+        """Let background work finish before the window is destroyed."""
         for worker in list(self._guid_compare_workers):
             worker.requestInterruption()
+
+        loader = getattr(self, "worker", None)
+        if loader is not None and loader.isRunning():
+            loader.requestInterruption()
+            loader.wait(3000)
+
         for worker in list(self._guid_compare_workers):
             worker.wait(3000)
+
+        # No late log line may reach a window that is going away.
+        catalog = getattr(self, "languages_db", None)
+        if catalog is not None and hasattr(catalog, "detach_log"):
+            catalog.detach_log()
+
+        # Release the memory-mapped index blob.
+        self._element_cache.clear()
+        self.assets_db = {}
+
         super().closeEvent(event)
 
 

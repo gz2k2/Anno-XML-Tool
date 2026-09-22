@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from difflib import SequenceMatcher
 
-from PyQt6.QtCore import QRect, QSize, Qt
+from PyQt6.QtCore import QRect, QRectF, QSize, Qt
 from PyQt6.QtGui import QColor, QFont, QPainter, QTextCharFormat, QTextCursor, QTextFormat
 from PyQt6.QtWidgets import QPlainTextEdit, QTextEdit, QWidget
 
@@ -99,6 +99,216 @@ def apply_theme_colors(background: QColor, text: QColor) -> None:
 
 
 # --------------------------------------------------------------------------
+# Line pairing inside a replace block
+# --------------------------------------------------------------------------
+#: Minimum similarity before two untagged lines are shown as ONE modified
+#: row. Anything below is a removal plus an unrelated insertion. Only
+#: reached by lines without an XML tag - tagged lines are paired by element
+#: name, see :func:`_best_anchor`.
+PAIR_CUTOFF = 0.5
+
+#: Upper bound on character-level line comparisons for ONE diff. That search
+#: is quadratic, and difflib happily reports dozens of replace blocks, so a
+#: per-block limit is not enough - the budget has to span the whole document.
+MAX_COMPARISONS = 20000
+
+_TAG_PATTERN = re.compile(r"^\s*<\s*(/?)\s*([\w:.\-]+)")
+
+
+def _line_key(line: str):
+    """Element name of an XML line, or None for a line without a tag.
+
+    ``</Foo>`` and ``<Foo>`` deliberately produce different keys: a closing
+    tag is not a modified version of an opening one.
+    """
+    match = _TAG_PATTERN.match(line)
+    if match is None:
+        return None
+    return match.group(1) + match.group(2).lower()
+
+
+def _score(matcher: SequenceMatcher, left_line: str, right_line: str,
+           left_key, right_key) -> float:
+    """Similarity of two already stripped lines with known element names.
+
+    *matcher* must already carry *left_line* as its second sequence: difflib
+    indexes seq2 and reuses that index for every seq1, so keeping the outer
+    line in seq2 turns the inner loop into a cheap scan.
+    """
+    if not left_line and not right_line:
+        return 1.0
+    if not left_line or not right_line:
+        return 0.0
+    if left_key != right_key:
+        return 0.0
+
+    matcher.set_seq1(right_line)
+    # Two cheap upper bounds prune most candidates before the real work.
+    if matcher.real_quick_ratio() < PAIR_CUTOFF:
+        return 0.0
+    if matcher.quick_ratio() < PAIR_CUTOFF:
+        return 0.0
+    ratio = matcher.ratio()
+    return ratio if ratio >= PAIR_CUTOFF else 0.0
+
+
+def similarity(left_line: str, right_line: str) -> float:
+    """How strongly two lines look like one edited line (0.0 - 1.0).
+
+    Lines carrying different XML element names score 0: they describe
+    different properties, so ``<ProductStorageList>3415</...>`` opposite
+    ``<CanStoreAllNormalProducts>1</...>`` is a deletion next to an
+    insertion, never a modification - even though a plain character diff
+    finds the angle brackets and digits they have in common.
+    """
+    left_line, right_line = left_line.strip(), right_line.strip()
+    matcher = SequenceMatcher(autojunk=False)
+    matcher.set_seq2(left_line)
+    return _score(matcher, left_line, right_line,
+                  _line_key(left_line), _line_key(right_line))
+
+
+def _best_anchor(left_text, right_text, left_tags, right_tags,
+                 a1, a2, b1, b2, matcher, budget):
+    """Best (left_index, right_index) to pair inside one window, or (-1, -1).
+
+    For XML the element name decides, not the characters: two lines describe
+    the same property exactly when their tag is the same. Comparing whole
+    lines with difflib was both slower - it dominated the profile at ~125 us
+    per pair - and less accurate, because ``<ProductStorageList>3415</...>``
+    and ``<CanStoreAllNormalProducts>1</...>`` share enough angle brackets
+    and digits to pass a character-level cutoff.
+
+    When a tag occurs several times in the window, the candidate closest to
+    the same relative position wins, which keeps repeated <Item> blocks in
+    order. Lines without a tag - a status message, plain text - are the only
+    ones still compared character by character.
+    """
+    # Tagged lines first: a dict lookup instead of a scan over the window.
+    candidates: dict = {}
+    for right_index in range(b1, b2):
+        tag = right_tags[right_index]
+        if tag is not None:
+            candidates.setdefault(tag, []).append(right_index)
+
+    best_distance, best_left, best_right = None, -1, -1
+    if candidates:
+        for left_index in range(a1, a2):
+            tag = left_tags[left_index]
+            if tag is None:
+                continue
+            for right_index in candidates.get(tag, ()):
+                distance = abs((left_index - a1) - (right_index - b1))
+                if best_distance is None or distance < best_distance:
+                    best_distance, best_left, best_right = (
+                        distance, left_index, right_index)
+                    if distance == 0:
+                        break
+            if best_distance == 0:
+                break
+
+    if best_left >= 0:
+        return best_left, best_right
+
+    # No tag matched anywhere: fall back to a character comparison, which
+    # only untagged lines can reach. Guarded by the shared budget.
+    combinations = (a2 - a1) * (b2 - b1)
+    if combinations > budget[0]:
+        budget[0] = 0
+        return -1, -1
+    budget[0] -= combinations
+
+    best_score = 0.0
+    for left_index in range(a1, a2):
+        if left_tags[left_index] is not None:
+            continue
+        left_line = left_text[left_index]
+        matcher.set_seq2(left_line)
+        for right_index in range(b1, b2):
+            if right_tags[right_index] is not None:
+                continue
+            score = _score(matcher, left_line, right_text[right_index],
+                           None, None)
+            if score > best_score:
+                best_score, best_left, best_right = score, left_index, right_index
+                if score == 1.0:
+                    break
+        if best_score == 1.0:
+            break
+
+    return best_left, best_right
+
+
+def pair_replace_block(left_lines, right_lines, i1, i2, j1, j2, budget=None):
+    """Pair up the lines of one replace block.
+
+    Returns ``[(left_index | None, right_index | None), ...]`` in display
+    order. A pair means "this line was modified", a half-empty entry means
+    "removed" or "added".
+
+    difflib reports a replace block as "these n lines became those m lines"
+    and says nothing about which line turned into which. Zipping them
+    positionally - what this used to do - therefore claims a modification
+    between whatever happens to sit at the same offset. The best-matching
+    pair is located instead, and the regions before and after it are then
+    treated the same way, so the order of the lines is preserved.
+
+    *budget* is a one-element list carrying the remaining comparisons; it is
+    shared across all blocks of one diff.
+    """
+    if budget is None:
+        budget = [MAX_COMPARISONS]
+
+    # Stripped text and element name of every line, computed once. Both used
+    # to be recomputed inside the comparison, i.e. twice per candidate pair.
+    left_text = [line.strip() for line in left_lines]
+    right_text = [line.strip() for line in right_lines]
+    left_tags = [_line_key(line) for line in left_text]
+    right_tags = [_line_key(line) for line in right_text]
+    matcher = SequenceMatcher(autojunk=False)
+
+    pairs: list[tuple] = []
+    # An explicit stack rather than recursion: a long block of alternating
+    # changes would otherwise nest one level per pair.
+    segments = [("split", i1, i2, j1, j2)]
+
+    while segments:
+        entry = segments.pop()
+
+        if entry[0] == "pair":
+            pairs.append((entry[1], entry[2]))
+            continue
+
+        _kind, a1, a2, b1, b2 = entry
+        if a1 >= a2 and b1 >= b2:
+            continue
+        if a1 >= a2:
+            pairs.extend((None, index) for index in range(b1, b2))
+            continue
+        if b1 >= b2:
+            pairs.extend((index, None) for index in range(a1, a2))
+            continue
+
+        best_left, best_right = _best_anchor(
+            left_text, right_text, left_tags, right_tags, a1, a2, b1, b2,
+            matcher, budget)
+
+        if best_left < 0:
+            # Nothing in this window resembles anything else: the whole
+            # block is a removal followed by an insertion.
+            pairs.extend((index, None) for index in range(a1, a2))
+            pairs.extend((None, index) for index in range(b1, b2))
+            continue
+
+        # Pushed back to front, so popping yields display order.
+        segments.append(("split", best_left + 1, a2, best_right + 1, b2))
+        segments.append(("pair", best_left, best_right))
+        segments.append(("split", a1, best_left, b1, best_right))
+
+    return pairs
+
+
+# --------------------------------------------------------------------------
 # Alignment logic (pure, unit-testable)
 # --------------------------------------------------------------------------
 def align_lines(left_text: str, right_text: str, ignore_whitespace: bool = True):
@@ -126,6 +336,9 @@ def align_lines(left_text: str, right_text: str, ignore_whitespace: bool = True)
     def push_filler(rows):
         rows.append({"text": FILLER_TEXT, "number": None, "kind": "filler"})
 
+    # Shared across all replace blocks of this diff, see MAX_COMPARISONS.
+    budget = [MAX_COMPARISONS]
+
     matcher = SequenceMatcher(None, left_keys, right_keys, autojunk=False)
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
@@ -135,20 +348,23 @@ def align_lines(left_text: str, right_text: str, ignore_whitespace: bool = True)
             continue
 
         if tag == "replace":
-            # Pair changed lines 1:1 as far as possible, pad the remainder.
-            paired = min(i2 - i1, j2 - j1)
-            for offset in range(paired):
-                push(left_rows, left_lines, i1 + offset, "changed")
-                push(right_rows, right_lines, j1 + offset, "changed")
-                stats["changed"] += 1
-            for index in range(i1 + paired, i2):
-                push(left_rows, left_lines, index, "removed")
-                push_filler(right_rows)
-                stats["removed"] += 1
-            for index in range(j1 + paired, j2):
-                push_filler(left_rows)
-                push(right_rows, right_lines, index, "added")
-                stats["added"] += 1
+            # Only lines that actually resemble each other become a single
+            # "changed" row; the rest is reported as a removal and an
+            # insertion, each against a filler on the opposite side.
+            for left_index, right_index in pair_replace_block(
+                    left_keys, right_keys, i1, i2, j1, j2, budget):
+                if left_index is not None and right_index is not None:
+                    push(left_rows, left_lines, left_index, "changed")
+                    push(right_rows, right_lines, right_index, "changed")
+                    stats["changed"] += 1
+                elif left_index is not None:
+                    push(left_rows, left_lines, left_index, "removed")
+                    push_filler(right_rows)
+                    stats["removed"] += 1
+                else:
+                    push_filler(left_rows)
+                    push(right_rows, right_lines, right_index, "added")
+                    stats["added"] += 1
             continue
 
         if tag == "delete":
@@ -230,6 +446,14 @@ class DiffPane(QPlainTextEdit):
             font = QFont("Monospace", 10)
         self.setFont(font)
         self.setTabStopDistance(4 * self.fontMetrics().horizontalAdvance(" "))
+
+        # The gutter needs a plain and a bold variant on every repaint.
+        # Deriving them from painter.font() per visible line allocated two
+        # QFont objects for each row of the viewport, on every scroll step.
+        self._gutter_font = QFont(font)
+        self._gutter_font_bold = QFont(font)
+        self._gutter_font_bold.setBold(True)
+
         self.refresh_theme()
 
         self._rows: list[dict] = []
@@ -326,9 +550,7 @@ class DiffPane(QPlainTextEdit):
 
                 marker = MARKERS.get(kind, " ")
                 if marker.strip():
-                    marker_font = painter.font()
-                    marker_font.setBold(True)
-                    painter.setFont(marker_font)
+                    painter.setFont(self._gutter_font_bold)
                     painter.setPen(MARKER_COLORS[kind])
                     painter.drawText(
                         QRect(2, int(top), 12, height),
@@ -337,10 +559,10 @@ class DiffPane(QPlainTextEdit):
                     )
 
                 if number is not None:
-                    number_font = painter.font()
-                    number_font.setBold(block_number == current)
-                    painter.setFont(number_font)
-                    painter.setPen(COLOR_GUTTER_ACTIVE if block_number == current
+                    is_current = block_number == current
+                    painter.setFont(self._gutter_font_bold if is_current
+                                    else self._gutter_font)
+                    painter.setPen(COLOR_GUTTER_ACTIVE if is_current
                                    else COLOR_GUTTER_FG)
                     painter.drawText(
                         QRect(0, int(top), width - 6, height),
@@ -351,6 +573,36 @@ class DiffPane(QPlainTextEdit):
             block = block.next()
             top = bottom
             bottom = top + self.blockBoundingRect(block).height()
+            block_number += 1
+
+    def paintEvent(self, event):
+        """Draw the alignment padding of the currently visible rows.
+
+        Filler rows have no text, so an opaque rectangle painted after the
+        normal text rendering is enough. Doing it here costs one fill per
+        visible line instead of one ExtraSelection per line of the document.
+        """
+        super().paintEvent(event)
+        if not self._rows:
+            return
+
+        painter = None
+        block = self.firstVisibleBlock()
+        block_number = block.blockNumber()
+        top = self.blockBoundingGeometry(block).translated(self.contentOffset()).top()
+        width = self.viewport().width()
+
+        while block.isValid() and top <= event.rect().bottom():
+            height = self.blockBoundingRect(block).height()
+            if block.isVisible() and top + height >= event.rect().top():
+                row = (self._rows[block_number]
+                       if block_number < len(self._rows) else None)
+                if row is not None and row["kind"] == "filler":
+                    if painter is None:
+                        painter = QPainter(self.viewport())
+                    painter.fillRect(QRectF(0, top, width, height), COLOR_FILLER)
+            block = block.next()
+            top += height
             block_number += 1
 
     # -- navigation ------------------------------------------------------
@@ -440,11 +692,14 @@ def set_diff_texts(left_pane: DiffPane, right_pane: DiffPane,
     left_pane.set_rows(left_rows)
     right_pane.set_rows(right_rows)
 
+    # Filler rows are deliberately absent: they carry no text and are painted
+    # directly by DiffPane.paintEvent. Building an ExtraSelection for them
+    # meant one QTextEdit.ExtraSelection object per padding line, i.e. for
+    # every single line of a one-sided asset.
     row_colors = {
         "added": COLOR_ADDED,
         "removed": COLOR_REMOVED,
         "changed": COLOR_CHANGED,
-        "filler": COLOR_FILLER,
     }
 
     left_selections, right_selections = [], []
@@ -460,7 +715,10 @@ def set_diff_texts(left_pane: DiffPane, right_pane: DiffPane,
             if selection is not None:
                 selections.append(selection)
 
-        if left_row["kind"] == "changed":
+        # Word-level marks only make sense when both sides really are the
+        # two versions of one line. A "changed" row always has a "changed"
+        # counterpart, but the check keeps a malformed row list harmless.
+        if left_row["kind"] == "changed" and right_row["kind"] == "changed":
             left_spans, right_spans = inline_ranges(left_row["text"], right_row["text"])
             for start, length in left_spans:
                 selection = _inline_selection(left_pane, index, start, length)

@@ -20,6 +20,7 @@ backup/
 config.ini
 auto-exe-to-py.json
 *copy*
+cache/
 
 #rda
 rdaconsole.*

@@ -1,6 +1,14 @@
 ## Changelog
 
 
+**v0.14.1-beta**
+
+- **Changed**
+  - **Optimized** GUID comparison.
+  - **Improved** loading performance.
+  - **Fixed** last used XML profile to load automatically on startup.
+
+
 **v0.13.4-beta**
 
 - **Added**

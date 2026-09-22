@@ -115,9 +115,13 @@ class Anno1800Game(AnnoGame):
             return inline.strip()
         return super().fallback_name(asset, values)
 
-    def find_files(self, folder: str) -> dict:
-        """Also report properties.xml, which only Anno 1800 ships."""
-        files = super().find_files(folder)
+    def _scan_files(self, folder: str) -> dict:
+        """Also report properties.xml, which only Anno 1800 ships.
+
+        Hooked into the uncached scan so the result lands in the shared
+        find_files cache instead of triggering a second os.walk per call.
+        """
+        files = super()._scan_files(folder)
         files["properties"] = ""
         for root, _dirs, names in os.walk(folder):
             for name in names:

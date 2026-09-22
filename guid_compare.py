@@ -16,18 +16,14 @@ INTERRUPT_CHECK_INTERVAL = 250
 
 
 def _indent(element: ET.Element, level: int = 0) -> None:
-    """Pretty-print an element tree in place."""
-    padding = "\n" + level * "  "
-    if len(element):
-        if not element.text or not element.text.strip():
-            element.text = padding + "  "
-        child = None
-        for child in element:
-            _indent(child, level + 1)
-        if child is not None and (not child.tail or not child.tail.strip()):
-            child.tail = padding
-    if level and (not element.tail or not element.tail.strip()):
-        element.tail = padding
+    """Pretty-print an element tree in place.
+
+    Thin wrapper around the standard library. The hand-written recursive
+    version this used to be existed in two copies (here and in the viewer)
+    and did the same job as ``ET.indent`` since Python 3.9, only slower and
+    without tail handling for the root element.
+    """
+    ET.indent(element, space="  ", level=level)
 
 
 def differing_line_numbers(left_text: str, right_text: str,
