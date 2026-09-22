@@ -31,6 +31,7 @@ APP_NAME = "Anno XML Viewer by gz2k2"
 GITHUB_PROJECT_URL = "https://github.com/gz2k2/Anno-XML-Tool"
 GITHUB_VERSION_URL = GITHUB_PROJECT_URL + "/blob/main/version.txt"
 GITHUB_VERSION_RAW_URL = "https://raw.githubusercontent.com/gz2k2/Anno-XML-Tool/main/version.txt"
+GITHUB_URL_RELEASE = "https://github.com/gz2k2/Anno-XML-Tool/releases"
 
 # XML base folders are kept per game. The games themselves live in
 # anno117.py / anno1800.py, so adding a title does not touch this file.
@@ -1547,9 +1548,9 @@ class AnnoModTool(QMainWindow):
         box.setTextFormat(Qt.TextFormat.RichText)
         box.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         box.setText(
-            f"A newer version of Anno XML Viewer is available: "
-            f"<b>v{latest_version}</b> (you are using v{self.app_version}).<br><br>"
-            f"<a href='{GITHUB_VERSION_URL}'>View the latest version on GitHub</a>"
+            f"A newer version of Anno XML Viewer is available:<br><br> "
+            f"<b>v{latest_version}</b><br><br>(you are using v{self.app_version}).<br><br>"
+            f"<a href='{GITHUB_URL_RELEASE}'>View the latest version on GitHub</a>"
         )
         box.exec()
 
