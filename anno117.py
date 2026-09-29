@@ -49,6 +49,7 @@ class Anno117Game(AnnoGame):
         "Amount",
         "Elements",
         "MaximumHitPoints",
+        "CounterAmount",
     })
 
     reference_fields = {

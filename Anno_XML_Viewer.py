@@ -777,7 +777,7 @@ class AnnoModTool(QMainWindow):
         self.combo_lang = QComboBox()
         self.combo_lang.setFixedWidth(140)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("enter one or more terms, use '-' prefix for exclusion (e.g. 'tech civic -gate')")
+        self.search.setPlaceholderText("Enter terms or comma-separated GUIDs, use '-' for exclusion (e.g. '12345, 54321' or 'tech civic -gate')")
 
         # Template-Filter (statt Combobox: Button + Popup)
         self.btn_template_filter = QPushButton("Template Filter...")
@@ -2292,15 +2292,21 @@ class AnnoModTool(QMainWindow):
 
     @staticmethod
     def _parse_query(query_text):
-        """Split a query into (include terms, exclude terms)."""
-        include, exclude = [], []
-        for part in query_text.split():
-            is_exclude = part.startswith("-")
-            term = part[1:] if (is_exclude or part.startswith("+")) else part
-            if not term:
-                continue
-            (exclude if is_exclude else include).append(term)
-        return include, exclude
+        """Split a query into (is_comma_separated, include terms, exclude terms)."""
+        if "," in query_text:
+            parts = [p.strip() for p in query_text.split(",") if p.strip()]
+            include = [p for p in parts if not p.startswith("-")]
+            exclude = [p[1:] for p in parts if p.startswith("-") and len(p) > 1]
+            return True, include, exclude
+        else:
+            include, exclude = [], []
+            for part in query_text.split():
+                is_exclude = part.startswith("-")
+                term = part[1:] if (is_exclude or part.startswith("+")) else part
+                if not term:
+                    continue
+                (exclude if is_exclude else include).append(term)
+            return False, include, exclude
 
     def apply_filter(self):
 
@@ -2314,23 +2320,31 @@ class AnnoModTool(QMainWindow):
         if not current_lang:
             return
 
-        include, exclude = self._parse_query(self.search.text().lower())
+        is_comma, include, exclude = self._parse_query(self.search.text().lower())
         rows = self._search_rows_for(current_lang)
         # 3 = GUID/name/template only, 4 = plus every other translated text.
         column = 3 if self.cb_search_main_only.isChecked() else 4
 
-        # One list comprehension per term instead of one nested loop over all
-        # terms per asset: every additional term only looks at the rows that
-        # survived the previous one.
+        # Filter by selected templates first if applicable
         selected = getattr(self, "_template_filter_selected", None)
         all_templates = getattr(self, "_all_template_names", None)
         if selected and all_templates is not None and len(selected) < len(all_templates):
             rows = [row for row in rows if row[2] in selected]
 
-        for term in include:
-            rows = [row for row in rows if term in row[column]]
+        def matches_term(term, row):
+            if term.isdigit():
+                return row[0] == term
+            return term in row[column]
+
+        if is_comma:
+            if include:
+                rows = [row for row in rows if any(matches_term(term, row) for term in include)]
+        else:
+            for term in include:
+                rows = [row for row in rows if matches_term(term, row)]
+
         for term in exclude:
-            rows = [row for row in rows if term not in row[column]]
+            rows = [row for row in rows if not matches_term(term, row)]
 
         # Fill in one go: insertRow() forced Qt to re-layout the whole table
         # for every single hit.

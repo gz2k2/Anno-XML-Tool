@@ -72,7 +72,24 @@ class Anno1800Game(AnnoGame):
         "TraderRerollInterval",
         "SellBudget",
         "BuyBudget",
-        "ProductionPerMinute"
+        "ProductionPerMinute",
+        "MinAmount",
+        "MaxAmount",
+        "InfluenceCosts",
+        "FreeAmount",
+        "MinSpentInfluence",
+        "MaxSpentInfluence",
+        "DamageExplosionCheckMax",
+        "Distance",
+        "Influence",
+        "MoneyValue",
+        "FullWeightPopulationCount",
+        "FullWeightPopulationCount",
+        "NoWeightPopulationCount",
+        "CycleTime",
+        "DamageExplosionChance",
+        "DamageExplosionCheckMax",
+        "BaseChance",
 
     })
 
