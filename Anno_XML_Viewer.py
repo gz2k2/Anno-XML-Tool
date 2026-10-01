@@ -755,6 +755,8 @@ class AnnoModTool(QMainWindow):
         self._search_rows = None
         self._search_names = {}
         self._search_cache_lang = None
+        # XML snippet search: regex pattern -> set of matching GUIDs.
+        self._xml_search_cache = {}
         # referenced GUID -> assets referencing it, filled by the loader.
         self.reverse_index = {}
         self.template_library = {}
@@ -777,7 +779,17 @@ class AnnoModTool(QMainWindow):
         self.combo_lang = QComboBox()
         self.combo_lang.setFixedWidth(140)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Enter terms or comma-separated GUIDs, use '-' for exclusion (e.g. '12345, 54321' or 'tech civic -gate')")
+        self.search.setPlaceholderText("Enter terms or comma-separated GUIDs, use '-' for exclusion (e.g. '12345, 54321', 'tech civic -gate', '<Name>DeliveryTime</Name>', '>Delivery*<')")
+        self.search.setToolTip(
+            "Text search: terms separated by spaces (AND) or commas (OR), '-' excludes.\n"
+            "XML search: enter an XML snippet, e.g. <Name>DeliveryTime</Name>,\n"
+            "<DeliveryTime>, <Name>Delivery or >DeliveryTime< (exact tag value).\n"
+            "'*' is a wildcard, e.g. >Delivery*<, <*Time>, <Name>*Time</Name> or deliv*time.\n"
+            "It is matched against the raw asset XML\n"
+            "(case-insensitive, whitespace/line breaks between tags are ignored).\n"
+            "Several snippets are combined with AND, a leading '-' excludes,\n"
+            "and snippets can be mixed with normal search terms."
+        )
 
         # Template-Filter (statt Combobox: Button + Popup)
         self.btn_template_filter = QPushButton("Template Filter...")
@@ -1139,7 +1151,21 @@ class AnnoModTool(QMainWindow):
         right_compare_layout = QVBoxLayout(right_compare_panel)
         right_compare_layout.setContentsMargins(0, 0, 0, 0)
         right_compare_layout.setSpacing(2)
-        right_compare_layout.addWidget(self.compare_right_path, 0)
+        # Optional separate GUID for the right pane. Empty = same GUID as left.
+        right_header_row = QHBoxLayout()
+        right_header_row.setContentsMargins(0, 0, 0, 0)
+        right_header_row.setSpacing(4)
+        self.compare_right_guid_input = QLineEdit()
+        self.compare_right_guid_input.setPlaceholderText("Right GUID (empty = same as left)")
+        self.compare_right_guid_input.setToolTip(
+            "Optional GUID for the right pane.\n"
+            "If empty, the GUID of the left pane is used."
+        )
+        self.compare_right_guid_input.setClearButtonEnabled(True)
+        self.compare_right_guid_input.setFixedWidth(230)
+        right_header_row.addWidget(self.compare_right_path, 1)
+        right_header_row.addWidget(self.compare_right_guid_input, 0)
+        right_compare_layout.addLayout(right_header_row, 0)
         self.compare_right_xml = DiffPane()
         self.compare_right_xml.set_message("Enter a GUID to compare.")
         right_compare_layout.addWidget(self.compare_right_xml, 1)
@@ -1168,6 +1194,11 @@ class AnnoModTool(QMainWindow):
         self._refresh_compare_watchlist()
         self.compare_watchlist.currentIndexChanged.connect(self._select_compare_watchlist_guid)
         self.compare_guid_input.returnPressed.connect(self.compare_guid)
+        self.compare_right_guid_input.returnPressed.connect(self.compare_guid)
+        # Clearing the right GUID falls back to the left GUID immediately.
+        self.compare_right_guid_input.textChanged.connect(
+            lambda text: self.compare_guid() if not text.strip() else None
+        )
         self.btn_compare_guid.clicked.connect(self.compare_guid)
         self.compare_left_path.currentIndexChanged.connect(lambda _index: self.compare_guid())
         self.compare_right_path.currentIndexChanged.connect(lambda _index: self.compare_guid())
@@ -1356,11 +1387,11 @@ class AnnoModTool(QMainWindow):
         xml_settings_layout.addStretch()
 
         # SEARCH DEBOUNCE ##############################################################
-        # Filtern erst, wenn 200 ms lang keine Eingabe mehr erfolgt ist. Ohne das
+        # Filtern erst, wenn 500 ms lang keine Eingabe mehr erfolgt ist. Ohne das
         # laeuft apply_filter() bei jedem Tastendruck ueber die komplette assets_db.
         self._search_debounce = QTimer(self)
         self._search_debounce.setSingleShot(True)
-        self._search_debounce.setInterval(200)
+        self._search_debounce.setInterval(500)
         self._search_debounce.timeout.connect(self.apply_filter)
 
         # SIGNALS ######################################################################
@@ -1375,6 +1406,13 @@ class AnnoModTool(QMainWindow):
         self.table.itemClicked.connect(self.load_asset_details)
         self.reverse_search_table.itemClicked.connect(self.load_asset_details)
         self.watchlist_table.itemClicked.connect(self.load_asset_details)
+
+        # Right-click menu "XML Export" on GUID results, references and watchlist.
+        for asset_table in (self.table, self.reverse_search_table, self.watchlist_table):
+            asset_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            asset_table.customContextMenuRequested.connect(
+                lambda pos, t=asset_table: self._show_asset_context_menu(t, pos)
+            )
         self.btn_watch_add.clicked.connect(self.add_selected_to_watchlist)
         self.btn_watch_remove.clicked.connect(self.remove_selected_from_watchlist)
         self.btn_export.clicked.connect(self.export_mod)
@@ -1460,25 +1498,29 @@ class AnnoModTool(QMainWindow):
             self.compare_right_xml.set_message("Enter a GUID to compare.")
             return
 
+        # The right pane uses its own GUID if one is entered, otherwise the
+        # GUID of the left pane.
+        right_guid = self.compare_right_guid_input.text().strip() or guid
+
         sides = (
-            ("left", self.compare_left_path.currentText(), self.compare_left_xml),
-            ("right", self.compare_right_path.currentText(), self.compare_right_xml),
+            ("left", self.compare_left_path.currentText(), self.compare_left_xml, guid),
+            ("right", self.compare_right_path.currentText(), self.compare_right_xml, right_guid),
         )
 
         pending = []
-        for side, folder, preview in sides:
+        for side, folder, preview, side_guid in sides:
             # The folder that is already open needs no background scan at all:
             # its assets are in memory. Only the other side has to be read
             # from disk.
-            local = self._loaded_asset_xml(folder, guid)
+            local = self._loaded_asset_xml(folder, side_guid)
             if local is not None:
                 self._show_guid_compare_result(request_id, side, local, preview)
                 continue
-            preview.set_message(f"Searching for GUID {guid}...")
-            pending.append((side, folder, preview))
+            preview.set_message(f"Searching for GUID {side_guid}...")
+            pending.append((side, folder, preview, side_guid))
 
-        for side, folder, preview in pending:
-            worker = GuidCompareLoader(request_id, folder, guid, self)
+        for side, folder, preview, side_guid in pending:
+            worker = GuidCompareLoader(request_id, folder, side_guid, self)
 
             # The search result arrives on `result`. `finished` is QThread's own
             # signal and is emitted only after run() has returned, so cleanup
@@ -2241,6 +2283,7 @@ class AnnoModTool(QMainWindow):
         self._search_rows = None
         self._search_names = {}
         self._search_cache_lang = None
+        self._xml_search_cache = {}
 
     def _search_rows_for(self, language):
         """Flat search table for one language.
@@ -2308,6 +2351,140 @@ class AnnoModTool(QMainWindow):
                 (exclude if is_exclude else include).append(term)
             return False, include, exclude
 
+    # XML SNIPPET SEARCH ###########################################################
+
+    #: One XML snippet inside the search field. Either a tag, optionally
+    #: followed by text and a closing tag, or a bare tag value enclosed in
+    #: >...<. Examples: <Name>DeliveryTime</Name>, <DeliveryTime>,
+    #: <Name>Delivery, >DeliveryTime<, >DeliveryTime</Name>,
+    #: -<Template>Item</Template>, ->Item<
+    _RE_XML_SNIPPET = re.compile(
+        r"(?<!\S)(-?)("
+        r"<[^<>]*>?(?:[^<>,]*?</[^<>]*>?|[^<>\s,]*)"
+        r"|>[^<>,]*<(?:/[^<>\s,]*>?)?"
+        r")"
+    )
+
+    @classmethod
+    def _split_xml_query(cls, query_text):
+        """Separate XML snippets from normal search terms.
+
+        Returns (xml_include, xml_exclude, remaining_text).
+        """
+        xml_include, xml_exclude = [], []
+        if "<" not in query_text and ">" not in query_text:
+            return xml_include, xml_exclude, query_text
+
+        def take(match):
+            snippet = match.group(2).strip()
+            if snippet and snippet not in ("<", ">", "><", "<>"):
+                (xml_exclude if match.group(1) else xml_include).append(snippet)
+            return " "
+
+        remaining = cls._RE_XML_SNIPPET.sub(take, query_text)
+        return xml_include, xml_exclude, remaining
+
+    @staticmethod
+    def _xml_snippet_pattern(snippet):
+        """Regex source for an XML snippet.
+
+        Whitespace and line breaks around tags are optional, so
+        <Name>DeliveryTime</Name> also finds the pretty-printed form
+        <Name> DeliveryTime </Name> or a value split across lines.
+        """
+        parts = []
+        for chunk in re.split(r"(\s+)", snippet):
+            if not chunk:
+                continue
+            parts.append(r"\s+" if chunk.isspace() else re.escape(chunk))
+        pattern = "".join(parts)
+        # '*' is a wildcard for any characters inside one tag name or value.
+        # It never crosses a '<' or '>' and stays within one line, so
+        # >Delivery*< cannot swallow the following tags.
+        # re.escape() leaves < > / untouched, so they can be widened here.
+        # This must happen before the wildcard is inserted, because the
+        # wildcard's character class contains < and > itself.
+        pattern = pattern.replace(">", r">\s*").replace("<", r"\s*<")
+        return pattern.replace(r"\*", r"[^<>\r\n]*")
+
+    def _xml_search_guids(self, snippet):
+        """Set of GUIDs whose raw XML contains *snippet* (cached)."""
+        pattern = self._xml_snippet_pattern(snippet)
+        cache = self._xml_search_cache
+        hits = cache.get(pattern)
+        if hits is not None:
+            return hits
+
+        regex = re.compile(pattern, re.IGNORECASE)
+        # Cheap pre-check: the longest literal part of the snippet must occur
+        # somewhere, otherwise the regex is not run at all.
+        literals = [part.lower() for part in re.split(r"[<>/\s*]+", snippet) if part]
+        probe = max(literals, key=len) if literals else ""
+
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            hits = set()
+            for guid, info in self.assets_db.items():
+                try:
+                    xml_text = info["xml"]
+                except (KeyError, TypeError):
+                    continue
+                if not xml_text:
+                    continue
+                if isinstance(xml_text, bytes):
+                    xml_text = xml_text.decode("utf-8", errors="replace")
+                if probe and probe not in xml_text.lower():
+                    continue
+                if regex.search(xml_text):
+                    hits.add(guid)
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        if len(cache) >= 32:
+            cache.clear()
+        cache[pattern] = hits
+        return hits
+
+    def _active_xml_snippets(self):
+        """XML snippets (include only) currently entered in the search field."""
+        include, _exclude, _rest = self._split_xml_query(self.search.text())
+        return include
+
+    def _highlight_xml_search_matches(self):
+        """Mark every hit of the XML search in the XML pane."""
+        selections = []
+        snippets = self._active_xml_snippets()
+        if snippets:
+            text = self.xml_editor.toPlainText()
+            fmt = QTextCharFormat()
+            fmt.setBackground(QColor("#f9a825"))
+            fmt.setForeground(QColor("#000000"))
+            first_pos = None
+            for snippet in snippets:
+                regex = re.compile(self._xml_snippet_pattern(snippet), re.IGNORECASE)
+                for match in regex.finditer(text):
+                    found = match.group(0)
+                    # Do not paint the optional leading/trailing whitespace.
+                    start = match.start() + (len(found) - len(found.lstrip()))
+                    end = match.start() + len(found.rstrip())
+                    if end <= start:
+                        continue
+                    selection = QTextEdit.ExtraSelection()
+                    selection.format = fmt
+                    cursor = QTextCursor(self.xml_editor.document())
+                    cursor.setPosition(start)
+                    cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+                    selection.cursor = cursor
+                    selections.append(selection)
+                    if first_pos is None or start < first_pos:
+                        first_pos = start
+            if first_pos is not None:
+                cursor = QTextCursor(self.xml_editor.document())
+                cursor.setPosition(first_pos)
+                self.xml_editor.setTextCursor(cursor)
+                self.xml_editor.ensureCursorVisible()
+        self.xml_editor.setExtraSelections(selections)
+
     def apply_filter(self):
 
         # A pending debounce run would repeat the work right after a direct
@@ -2320,7 +2497,8 @@ class AnnoModTool(QMainWindow):
         if not current_lang:
             return
 
-        is_comma, include, exclude = self._parse_query(self.search.text().lower())
+        xml_include, xml_exclude, remaining = self._split_xml_query(self.search.text())
+        is_comma, include, exclude = self._parse_query(remaining.lower())
         rows = self._search_rows_for(current_lang)
         # 3 = GUID/name/template only, 4 = plus every other translated text.
         column = 3 if self.cb_search_main_only.isChecked() else 4
@@ -2331,9 +2509,19 @@ class AnnoModTool(QMainWindow):
         if selected and all_templates is not None and len(selected) < len(all_templates):
             rows = [row for row in rows if row[2] in selected]
 
+        # '*' in a normal term is a wildcard for any characters within a
+        # line, e.g. 'deliv*time' or 'farm*field'. Compiled once per term.
+        wildcard_regex = {
+            term: re.compile(re.escape(term).replace(r"\*", r"[^\n]*"))
+            for term in include + exclude if "*" in term
+        }
+
         def matches_term(term, row):
             if term.isdigit():
                 return row[0] == term
+            regex = wildcard_regex.get(term)
+            if regex is not None:
+                return regex.search(row[column]) is not None
             return term in row[column]
 
         if is_comma:
@@ -2345,6 +2533,15 @@ class AnnoModTool(QMainWindow):
 
         for term in exclude:
             rows = [row for row in rows if not matches_term(term, row)]
+
+        # XML snippets are matched against the raw asset XML.
+        for snippet in xml_include:
+            hits = self._xml_search_guids(snippet)
+            rows = [row for row in rows if row[0] in hits]
+
+        for snippet in xml_exclude:
+            hits = self._xml_search_guids(snippet)
+            rows = [row for row in rows if row[0] not in hits]
 
         # Fill in one go: insertRow() forced Qt to re-layout the whole table
         # for every single hit.
@@ -2366,8 +2563,11 @@ class AnnoModTool(QMainWindow):
 
         self.table.setUpdatesEnabled(True)
         self.table.setSortingEnabled(True)
+        xml_info = ""
+        if xml_include or xml_exclude:
+            xml_info = f" (XML search: {', '.join(xml_include + ['-' + x for x in xml_exclude])})"
         self.statusBar().showMessage(
-            f"{len(rows)} of {len(self.assets_db)} assets shown", 3000
+            f"{len(rows)} of {len(self.assets_db)} assets shown{xml_info}", 5000
         )
 
     def _display_name_for_guid(self, guid):
@@ -2644,10 +2844,26 @@ class AnnoModTool(QMainWindow):
             self.xml_editor.setPlainText(ET.tostring(self.current_xml_root, encoding='unicode'))
 
             self.prop_tree.clear()
+
+            # <Template> sits next to <Values>, so it is shown as its own
+            # top-level entry above the values.
+            template = self.current_xml_root.find("Template")
+            if template is not None:
+                template_value = (template.text or "").strip()
+                template_item = QTreeWidgetItem(self.prop_tree, ["Template", template_value, ""])
+                template_item.setData(0, Qt.ItemDataRole.UserRole, template)
+                template_font = template_item.font(0)
+                template_font.setBold(True)
+                template_item.setFont(0, template_font)
+                template_item.setForeground(0, self._tree_colors()["group"])
+                template_item.setForeground(1, self._tree_colors()["value"])
+
             vals = self.current_xml_root.find("Values")
 
             if vals is not None:
                 self.parse_logic_to_tree(vals)
+
+            self._highlight_xml_search_matches()
 
         self.block_signals = False
 
@@ -2681,14 +2897,48 @@ class AnnoModTool(QMainWindow):
                 if klartext:
                     item.setForeground(2, self._tree_colors()["name"])
 
-    def export_mod(self):
-
-        row = self.table.currentRow()
-
-        if row < 0 or self.current_xml_root is None:
+    def _show_asset_context_menu(self, table, pos):
+        """Context menu for the GUID result, reference and watchlist tables."""
+        item = table.itemAt(pos)
+        if item is None:
+            return
+        guid_item = table.item(item.row(), 0)
+        if guid_item is None:
+            return
+        guid = guid_item.text().strip()
+        if not guid:
             return
 
-        guid = self.table.item(row, 0).text()
+        table.selectRow(item.row())
+
+        menu = QMenu(table)
+        action_export = menu.addAction("XML Export")
+        action_export.setEnabled(guid in self.assets_db)
+        chosen = menu.exec(table.viewport().mapToGlobal(pos))
+        if chosen == action_export:
+            self.export_asset_xml(guid)
+
+    def export_mod(self):
+
+        guid = getattr(self, "current_asset_guid", "")
+        if not guid:
+            row = self.table.currentRow()
+            if row < 0:
+                return
+            guid = self.table.item(row, 0).text()
+
+        self.export_asset_xml(guid)
+
+    def export_asset_xml(self, guid):
+        """Export one asset including all linked Buffs/Effects to an XML file."""
+
+        guid = str(guid).strip()
+        cached = self._asset_element(guid)
+        if cached is None:
+            QMessageBox.warning(self, "XML Export", f"GUID {guid} is not available in the loaded data.")
+            return
+        export_root = cached[0]
+
         default_name = f"ASSETS_GUID_{guid}.xml"
         file_path, _ = QFileDialog.getSaveFileName(self, "Save XML File", default_name, "XML Files (*.xml)")
 
@@ -2696,7 +2946,7 @@ class AnnoModTool(QMainWindow):
             exported_guids = {guid}
 
             with open(file_path, "w", encoding="utf-8") as f:
-                a_copy = ET.fromstring(ET.tostring(self.current_xml_root))
+                a_copy = ET.fromstring(ET.tostring(export_root))
                 indent(a_copy, level=0)
                 f.write(ET.tostring(a_copy, encoding="unicode"))
                 f.write('\n')
@@ -2730,7 +2980,7 @@ class AnnoModTool(QMainWindow):
                             elif found_node.text and found_node.text.strip():
                                 process_guid(found_node.text.strip(), tag)
 
-                vals = self.current_xml_root.find("Values")
+                vals = export_root.find("Values")
 
                 if vals is not None:
                     export_recursive(vals)
