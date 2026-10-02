@@ -1,5 +1,16 @@
 ## Changelog
 
+### [0.20.2-beta] - 2026-10-02
+
+#### Added
+* **"Texts" Tab:** New tab to search for texts or GUIDs.
+* **Configurable Font Size:** Added option to customize font size in Settings.
+
+#### Fixed
+* **GUID Comparison:** Improved the reliability of the GUID compare feature.
+* **UI Fixes:** Resolved minor cosmetic issues.
+
+
 **v0.14.2-beta**
 
 - **Fixed**
