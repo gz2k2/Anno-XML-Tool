@@ -14,6 +14,7 @@ import os
 import xml.etree.ElementTree as ET
 
 from anno_game import AnnoGame, register
+from anno_value_only_tags import VALUE_ONLY_TAGS
 
 
 class Anno117Game(AnnoGame):
@@ -44,13 +45,9 @@ class Anno117Game(AnnoGame):
         "InfoDescription",
     })
 
-    # Pure quantities that reference neither a text entry nor an asset.
-    value_only_tags = frozenset({
-        "Amount",
-        "Elements",
-        "MaximumHitPoints",
-        "CounterAmount",
-    })
+    # Pure quantities - shared list in anno_value_only_tags.py. Tags this
+    # game treats as text references are removed so they keep resolving.
+    value_only_tags = VALUE_ONLY_TAGS - text_id_tags
 
     reference_fields = {
         "Effects": "EffectAsset",

@@ -21,8 +21,9 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QSplitter, QMessageBox, QTreeWidget, QTreeWidgetItem, 
                              QMenu, QDialog, QListWidget, QListWidgetItem, 
                              QDialogButtonBox, QComboBox, QTabWidget, QGroupBox,
-                             QCheckBox, QProgressDialog, QSizePolicy)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSettings, QUrl, QTimer
+                             QCheckBox, QProgressDialog, QSizePolicy, QTableView)
+from PyQt6.QtCore import (Qt, QThread, pyqtSignal, QSettings, QUrl, QTimer,
+                          QAbstractTableModel, QModelIndex)
 from PyQt6.QtGui import (QSyntaxHighlighter, QTextCharFormat, QColor, QFont, QAction,
                          QPixmap, QIcon, QTextCursor)
 from PyQt6.QtGui import QDesktopServices
@@ -208,6 +209,60 @@ class VersionCheckWorker(QThread):
 ################################################################################
 # MAIN APPLICATION
 ################################################################################
+
+class TextsTableModel(QAbstractTableModel):
+    """Read-only model for the texts_*.xml entries of one language.
+
+    A texts file holds several hundred thousand entries. QTableWidget would
+    create two QTableWidgetItems per entry, so the rows live in a plain list
+    of (text_id, text) tuples and Qt only asks for the visible cells.
+    """
+
+    HEADERS = ("GUID", "TEXT")
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._rows = []
+
+    def set_rows(self, rows):
+        self.beginResetModel()
+        self._rows = rows
+        self.endResetModel()
+
+    def rowCount(self, parent=QModelIndex()):
+        return 0 if parent.isValid() else len(self._rows)
+
+    def columnCount(self, parent=QModelIndex()):
+        return 0 if parent.isValid() else 2
+
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid():
+            return None
+        if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ToolTipRole):
+            return self._rows[index.row()][index.column()]
+        return None
+
+    def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
+        if role != Qt.ItemDataRole.DisplayRole:
+            return None
+        if orientation == Qt.Orientation.Horizontal:
+            return self.HEADERS[section]
+        return section + 1
+
+    def sort(self, column, order=Qt.SortOrder.AscendingOrder):
+        reverse = order == Qt.SortOrder.DescendingOrder
+        if column == 0:
+            # Numeric GUIDs sort by value, anything else after them by text.
+            def key(row):
+                guid = row[0]
+                return (0, int(guid), "") if guid.isdigit() else (1, 0, guid.lower())
+        else:
+            def key(row):
+                return row[1].lower()
+        self.layoutAboutToBeChanged.emit()
+        self._rows.sort(key=key, reverse=reverse)
+        self.layoutChanged.emit()
+
 
 class _KofiLinkLabel(QLabel):
     
@@ -1077,6 +1132,90 @@ class AnnoModTool(QMainWindow):
         self.templates_filter.textChanged.connect(self.filter_templates)
         self.templates_list.itemClicked.connect(self.preview_template)
 
+        # TAB: TEXTS ###################################################################
+        # Content of texts_*.xml for the language selected in the toolbar.
+
+        self.texts_tab = QWidget()
+        self.tabs.addTab(self.texts_tab, "Texts")
+        texts_layout = QVBoxLayout(self.texts_tab)
+
+        texts_search_row = QHBoxLayout()
+        texts_search_row.setSpacing(6)
+
+        self.texts_guid_filter = QLineEdit()
+        self.texts_guid_filter.setPlaceholderText("GUID (exact)...")
+        self.texts_guid_filter.setToolTip(
+            "Shows only the entry with exactly this GUID.\n"
+            "Example: 737 finds 737, but not 1737."
+        )
+        self.texts_guid_filter.setClearButtonEnabled(True)
+        self.texts_guid_filter.setFixedWidth(200)
+
+        self.texts_filter = QLineEdit()
+        self.texts_filter.setPlaceholderText("Search text, e.g. 'mackerel coast' or 'mackerel -coast'...")
+        self.texts_filter.setToolTip(
+            "Terms separated by spaces must all be contained (AND).\n"
+            "A leading '-' excludes a term.\n"
+            "Case-insensitive, partial words match (mackerel finds mackerels)."
+        )
+        self.texts_filter.setClearButtonEnabled(True)
+
+        texts_search_row.addWidget(QLabel("GUID:"))
+        texts_search_row.addWidget(self.texts_guid_filter)
+        texts_search_row.addWidget(QLabel("Text:"))
+        texts_search_row.addWidget(self.texts_filter, 1)
+        texts_layout.addLayout(texts_search_row)
+
+        self.texts_model = TextsTableModel(self)
+        self.texts_table = QTableView()
+        self.texts_table.setModel(self.texts_model)
+        self.texts_table.verticalHeader().setVisible(False)
+        self.texts_table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
+        self.texts_table.setEditTriggers(QTableView.EditTrigger.NoEditTriggers)
+        self.texts_table.setWordWrap(False)
+        texts_header = self.texts_table.horizontalHeader()
+        texts_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        texts_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.texts_table.setColumnWidth(0, 110)
+        self.texts_table.setSortingEnabled(True)
+        self.texts_table.sortByColumn(0, Qt.SortOrder.AscendingOrder)
+        # XML of the selected entry, right of the result list (2:1).
+        texts_xml_container = QWidget()
+        texts_xml_layout = QVBoxLayout(texts_xml_container)
+        texts_xml_layout.setContentsMargins(0, 0, 0, 0)
+        texts_xml_layout.setSpacing(0)
+        texts_xml_header = QLabel(" XML")
+        texts_xml_header.setProperty("sectionHeader", True)
+        self.texts_xml_view = QTextEdit()
+        self.texts_xml_view.setReadOnly(True)
+        texts_xml_layout.addWidget(texts_xml_header)
+        texts_xml_layout.addWidget(self.texts_xml_view)
+
+        self.texts_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.texts_splitter.addWidget(self.texts_table)
+        self.texts_splitter.addWidget(texts_xml_container)
+        self.texts_splitter.setChildrenCollapsible(False)
+        self.texts_splitter.setStretchFactor(0, 2)
+        self.texts_splitter.setStretchFactor(1, 1)
+        self.texts_splitter.setSizes([800, 400])
+        texts_layout.addWidget(self.texts_splitter, 1)
+
+        self.texts_table.selectionModel().currentRowChanged.connect(
+            lambda current, _previous: self.show_text_xml(current)
+        )
+
+        self.lbl_texts_count = QLabel("")
+        self.lbl_texts_count.setProperty("accentText", True)
+        texts_layout.addWidget(self.lbl_texts_count)
+
+        # Debounced like the main search - the list can be very long.
+        self._texts_debounce = QTimer(self)
+        self._texts_debounce.setSingleShot(True)
+        self._texts_debounce.setInterval(300)
+        self._texts_debounce.timeout.connect(self.filter_texts)
+        self.texts_filter.textChanged.connect(lambda _t: self._texts_debounce.start())
+        self.texts_guid_filter.textChanged.connect(lambda _t: self._texts_debounce.start())
+
         # TAB 4: GUID COMPARE #########################################################
 
         self.guid_compare_tab = QWidget()
@@ -1426,6 +1565,7 @@ class AnnoModTool(QMainWindow):
             self.xml_editor, 
             self.lib_preview, 
             self.templates_preview,
+            self.texts_xml_view,
             self.buff_view,
             self.debug_console
         ]
@@ -2129,6 +2269,7 @@ class AnnoModTool(QMainWindow):
         self._template_filter_refresh_from_assets(a)
         self.apply_filter()
         self.refresh_watchlist()
+        self.filter_texts()
 
         self.statusBar().showMessage(f"Loaded: {len(a)} assets")
 
@@ -2140,6 +2281,79 @@ class AnnoModTool(QMainWindow):
         for path in self.structure_catalog_list:
             if query in path.lower():
                 self.lib_list.addItem(path)
+
+    def filter_texts(self):
+        """Fill the Texts tab with the entries of the selected language.
+
+        GUID field: exact match only (737 does not find 1737).
+        Text field: space-separated terms must all occur, '-term' excludes.
+        Both fields are combined with AND.
+        """
+        timer = getattr(self, "_texts_debounce", None)
+        if timer is not None:
+            timer.stop()
+
+        language = self.combo_lang.currentText()
+        lang_dict = self.languages_db.get(language, {}) if language else {}
+        guid_query = self.texts_guid_filter.text().strip()
+
+        include, exclude = [], []
+        for part in self.texts_filter.text().lower().split():
+            if part.startswith("-"):
+                if len(part) > 1:
+                    exclude.append(part[1:])
+            else:
+                include.append(part)
+
+        if guid_query:
+            # Exact match: a direct lookup instead of a scan.
+            text = lang_dict.get(guid_query)
+            if text is None and guid_query.isdigit():
+                # Fallback in case the catalog keys are stored as integers.
+                text = lang_dict.get(int(guid_query))
+            candidates = [(guid_query, text)] if text is not None else []
+        else:
+            candidates = lang_dict.items()
+
+        rows = []
+        for key, text in candidates:
+            text = str(text)
+            if include or exclude:
+                lowered = text.lower()
+                if not all(term in lowered for term in include):
+                    continue
+                if any(term in lowered for term in exclude):
+                    continue
+            rows.append((str(key), text))
+
+        self.texts_model.set_rows(rows)
+        self.texts_xml_view.clear()
+        header = self.texts_table.horizontalHeader()
+        self.texts_model.sort(header.sortIndicatorSection(), header.sortIndicatorOrder())
+
+        lang_info = f" ({language})" if language else ""
+        self.lbl_texts_count.setText(
+            f"{len(rows)} of {len(lang_dict)} texts shown{lang_info}"
+        )
+
+    def show_text_xml(self, index):
+        """Show the selected texts_*.xml entry as XML in the right pane.
+
+        The entry is rebuilt from the loaded text catalog, using the key tag
+        of the active game (<GUID> in Anno 1800, <LineId> in Anno 117).
+        """
+        if index is None or not index.isValid():
+            self.texts_xml_view.clear()
+            return
+        key = self.texts_model.data(self.texts_model.index(index.row(), 0))
+        text = self.texts_model.data(self.texts_model.index(index.row(), 1))
+        key_tag = getattr(self.active_game, "text_key_tag", "GUID") or "GUID"
+
+        entry = ET.Element("Text")
+        ET.SubElement(entry, key_tag).text = key
+        ET.SubElement(entry, "Text").text = text
+        indent(entry)
+        self.texts_xml_view.setPlainText(ET.tostring(entry, encoding="unicode"))
 
     def filter_templates(self):
 
@@ -2265,6 +2479,7 @@ class AnnoModTool(QMainWindow):
         self._invalidate_search_cache()
         self.apply_filter()
         self.refresh_watchlist()
+        self.filter_texts()
 
         # Re-select the asset and refresh all detail panes with the new language
         if selected_guid:

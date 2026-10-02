@@ -28,6 +28,7 @@ import os
 import xml.etree.ElementTree as ET
 
 from anno_game import AnnoGame, register
+from anno_value_only_tags import VALUE_ONLY_TAGS
 
 
 class Anno1800Game(AnnoGame):
@@ -57,41 +58,9 @@ class Anno1800Game(AnnoGame):
         "InfoDescription",  # description text
     })
 
-    # Pure quantities. These reference nothing at all: neither a text entry
-    # nor an asset. <Amount>500</Amount> used to be resolved against the asset
-    # database and displayed the name of the asset with the GUID 500.
-    value_only_tags = frozenset({
-        "Amount",
-        "InactiveAmount",    # sibling of Amount in <Maintenance>
-        "MaximumHitPoints",
-        "BuildModeRandomRotation",
-        "LineID",            # internal number, not a text key
-        "ActionWeight",
-        "AgreementThreshold",
-        "NotificationPriority",
-        "TraderRerollInterval",
-        "SellBudget",
-        "BuyBudget",
-        "ProductionPerMinute",
-        "MinAmount",
-        "MaxAmount",
-        "InfluenceCosts",
-        "FreeAmount",
-        "MinSpentInfluence",
-        "MaxSpentInfluence",
-        "DamageExplosionCheckMax",
-        "Distance",
-        "Influence",
-        "MoneyValue",
-        "FullWeightPopulationCount",
-        "FullWeightPopulationCount",
-        "NoWeightPopulationCount",
-        "CycleTime",
-        "DamageExplosionChance",
-        "DamageExplosionCheckMax",
-        "BaseChance",
-
-    })
+    # Pure quantities - shared list in anno_value_only_tags.py. Tags this
+    # game treats as text references are removed so they keep resolving.
+    value_only_tags = VALUE_ONLY_TAGS - text_id_tags
 
     #: Extra data file shipped with Anno 1800.
     properties_file = "properties.xml"
