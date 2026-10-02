@@ -15,6 +15,7 @@ import xml.etree.ElementTree as ET
 
 from anno_game import AnnoGame, register
 from anno_value_only_tags import VALUE_ONLY_TAGS
+from anno_buff_tags import DEFAULT_BUFF_TAGS
 
 
 class Anno117Game(AnnoGame):
@@ -57,17 +58,8 @@ class Anno117Game(AnnoGame):
         "Resources": "Resource",
     }
 
-    default_buff_tags = (
-        "AdditionalFunctionalEffect",
-        "BoostBuffs",
-        "Buffs",
-        "Effects",
-        "FunctionalEffects",
-        "Resources",
-        "TechResearchableTrigger",
-        "UnlockReward",
-        "MythicEffect",
-    )
+    # Shared list in anno_buff_tags.py - identical for every game.
+    default_buff_tags = DEFAULT_BUFF_TAGS
 
     def detect_score(self, folder: str) -> int:
         """Score based on the text-key element actually used in the data."""

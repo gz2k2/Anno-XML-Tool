@@ -29,6 +29,7 @@ import xml.etree.ElementTree as ET
 
 from anno_game import AnnoGame, register
 from anno_value_only_tags import VALUE_ONLY_TAGS
+from anno_buff_tags import DEFAULT_BUFF_TAGS
 
 
 class Anno1800Game(AnnoGame):
@@ -74,16 +75,8 @@ class Anno1800Game(AnnoGame):
         "RewardPool": "RewardPool",
     }
 
-    default_buff_tags = (
-        "BoostBuffs",
-        "Buffs",
-        "Effects",
-        "FunctionalEffects",
-        "ItemAction",
-        "Resources",
-        "RewardPool",
-        "UnlockReward",
-    )
+    # Shared list in anno_buff_tags.py - identical for every game.
+    default_buff_tags = DEFAULT_BUFF_TAGS
 
     def display_text_id(self, asset: ET.Element, values: ET.Element) -> str | None:
         """Text key of the display name - always the asset's own GUID.

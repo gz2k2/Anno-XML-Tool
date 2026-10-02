@@ -21,11 +21,12 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QSplitter, QMessageBox, QTreeWidget, QTreeWidgetItem, 
                              QMenu, QDialog, QListWidget, QListWidgetItem, 
                              QDialogButtonBox, QComboBox, QTabWidget, QGroupBox,
-                             QCheckBox, QProgressDialog, QSizePolicy, QTableView)
+                             QCheckBox, QProgressDialog, QSizePolicy, QTableView,
+                             QStyledItemDelegate, QStyleOptionViewItem, QStyle)
 from PyQt6.QtCore import (Qt, QThread, pyqtSignal, QSettings, QUrl, QTimer,
                           QAbstractTableModel, QModelIndex)
 from PyQt6.QtGui import (QSyntaxHighlighter, QTextCharFormat, QColor, QFont, QAction,
-                         QPixmap, QIcon, QTextCursor)
+                         QPixmap, QIcon, QTextCursor, QFontMetrics, QPalette)
 from PyQt6.QtGui import QDesktopServices
 
 APP_NAME = "Anno XML Viewer by gz2k2"
@@ -262,6 +263,102 @@ class TextsTableModel(QAbstractTableModel):
         self.layoutAboutToBeChanged.emit()
         self._rows.sort(key=key, reverse=reverse)
         self.layoutChanged.emit()
+
+
+class SearchHighlightDelegate(QStyledItemDelegate):
+    """Item delegate that colours every occurrence of a search term.
+
+    The row background, selection, icon and expand arrow are drawn by the
+    style as usual; only the text is painted here, segment by segment, so the
+    matching parts get a highlight background.
+    """
+
+    HIGHLIGHT_BACKGROUND = QColor("#f9a825")
+    HIGHLIGHT_TEXT = QColor("#000000")
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._regex = None
+
+    def set_query(self, query):
+        """Highlight a single term (Templates, Structure Library)."""
+        self.set_terms([query] if query else [])
+
+    def set_terms(self, terms):
+        """Highlight several terms at once.
+
+        '*' inside a term is a wildcard for any characters, matching the
+        search rules of the Asset Viewer (e.g. 'deliv*time').
+        """
+        patterns = []
+        for term in terms or ():
+            term = (term or "").strip().strip("*")
+            if not term:
+                continue
+            patterns.append(re.escape(term).replace(r"\*", ".*?"))
+        # Longer terms first, so 'buffs' wins over 'buff' on the same spot.
+        patterns.sort(key=len, reverse=True)
+        self._regex = re.compile("|".join(patterns), re.IGNORECASE) if patterns else None
+
+    def _segments(self, text):
+        """Split *text* into (part, is_match) tuples."""
+        segments = []
+        pos = 0
+        for match in self._regex.finditer(text):
+            if match.end() == match.start():
+                continue
+            if match.start() > pos:
+                segments.append((text[pos:match.start()], False))
+            segments.append((match.group(0), True))
+            pos = match.end()
+        if pos < len(text):
+            segments.append((text[pos:], False))
+        return segments
+
+    def paint(self, painter, option, index):
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        text = opt.text
+        if not text or self._regex is None or not self._regex.search(text):
+            super().paint(painter, option, index)
+            return
+
+        widget = opt.widget
+        style = widget.style() if widget is not None else QApplication.style()
+
+        # Let the style draw everything except the text.
+        opt.text = ""
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, widget)
+
+        text_rect = style.subElementRect(QStyle.SubElement.SE_ItemViewItemText, opt, widget)
+        margin = style.pixelMetric(QStyle.PixelMetric.PM_FocusFrameHMargin, None, widget) + 1
+        text_rect = text_rect.adjusted(margin, 0, -margin, 0)
+
+        selected = bool(opt.state & QStyle.StateFlag.State_Selected)
+        normal_color = opt.palette.color(
+            QPalette.ColorRole.HighlightedText if selected else QPalette.ColorRole.Text
+        )
+
+        painter.save()
+        painter.setClipRect(text_rect)
+        painter.setFont(opt.font)
+        metrics = QFontMetrics(opt.font)
+        x = text_rect.left()
+        top = text_rect.top()
+        height = text_rect.height()
+        flags = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        for part, is_match in self._segments(text):
+            width = metrics.horizontalAdvance(part)
+            if is_match:
+                painter.fillRect(x, top + 1, width, height - 2, self.HIGHLIGHT_BACKGROUND)
+                painter.setPen(self.HIGHLIGHT_TEXT)
+            else:
+                painter.setPen(normal_color)
+            painter.drawText(x, top, width + 1, height, flags, part)
+            x += width
+            if x > text_rect.right():
+                break
+        painter.restore()
 
 
 class _KofiLinkLabel(QLabel):
@@ -964,6 +1061,9 @@ class AnnoModTool(QMainWindow):
         self.top_h_splitter = QSplitter(Qt.Orientation.Horizontal)
 
         self.table = QTableWidget(0, 3)
+        # Colours the search terms in GUID, Display Name and Template.
+        self._table_highlighter = SearchHighlightDelegate(self.table)
+        self.table.setItemDelegate(self._table_highlighter)
         self.table.setHorizontalHeaderItem(0, QTableWidgetItem("GUID"))
         self.table.setHorizontalHeaderItem(1, QTableWidgetItem("Display Name"))
         self.table.setHorizontalHeaderItem(2, QTableWidgetItem("Template"))
@@ -1122,6 +1222,9 @@ class AnnoModTool(QMainWindow):
 
         self.templates_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.templates_list = QListWidget()
+        # Colours the search term inside every template name.
+        self._templates_highlighter = SearchHighlightDelegate(self.templates_list)
+        self.templates_list.setItemDelegate(self._templates_highlighter)
         self.templates_preview = QTextEdit()
         self.templates_preview.setReadOnly(True)
 
@@ -1168,6 +1271,9 @@ class AnnoModTool(QMainWindow):
 
         self.texts_model = TextsTableModel(self)
         self.texts_table = QTableView()
+        # Colours the text search terms (and an exact GUID hit).
+        self._texts_highlighter = SearchHighlightDelegate(self.texts_table)
+        self.texts_table.setItemDelegate(self._texts_highlighter)
         self.texts_table.setModel(self.texts_model)
         self.texts_table.verticalHeader().setVisible(False)
         self.texts_table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
@@ -1224,91 +1330,130 @@ class AnnoModTool(QMainWindow):
         compare_layout.setContentsMargins(6, 6, 6, 6)
         compare_layout.setSpacing(6)
 
-        # The toolbar lives in its own container so it can be pinned to the top
-        # with a fixed height. Every remaining pixel then goes to the panes.
-        compare_toolbar = QWidget()
-        compare_search_row = QHBoxLayout(compare_toolbar)
-        compare_search_row.setContentsMargins(0, 0, 0, 0)
-        compare_search_row.setSpacing(6)
-        self.compare_watchlist = QComboBox()
-        self.compare_watchlist.setMinimumWidth(260)
-        self.compare_watchlist.setToolTip("Select a GUID from the watchlist")
-        self.compare_guid_input = QLineEdit()
-        self.compare_guid_input.setPlaceholderText("Enter a GUID to compare...")
-        self.btn_compare_guid = QPushButton("Compare GUID")
-        compare_search_row.addWidget(QLabel("Watchlist:"))
-        compare_search_row.addWidget(self.compare_watchlist)
-        compare_search_row.addWidget(self.compare_guid_input)
-        compare_search_row.addWidget(self.btn_compare_guid)
+        # Layout:
+        #   toolbar   [Compare]  [Prev] [Next]  [x] Ignore whitespace   stats
+        #   LEFT  | Folder: [....]           | RIGHT | Folder: [....]
+        #         | GUID:   [....] Watchlist |       | GUID:   [....]
+        #         | <diff pane>              |       | <diff pane>
+        # Every input belongs to the pane it controls, and both sides use
+        # the same label widths so the rows line up.
 
-        # Diff navigation + summary
+        # --- Toolbar: actions that affect both panes -------------------------
+        compare_toolbar = QWidget()
+        compare_toolbar_row = QHBoxLayout(compare_toolbar)
+        compare_toolbar_row.setContentsMargins(0, 0, 0, 0)
+        compare_toolbar_row.setSpacing(6)
+
+        self.btn_compare_guid = QPushButton("Compare")
+        self.btn_compare_guid.setToolTip("Compare the left and right GUID (Enter in a GUID field does the same)")
+        self.btn_compare_guid.setMinimumWidth(110)
+
         self.btn_diff_prev = QPushButton("\u25c0 Prev diff")
         self.btn_diff_next = QPushButton("Next diff \u25b6")
         self.btn_diff_prev.setToolTip("Jump to the previous block of differences")
         self.btn_diff_next.setToolTip("Jump to the next block of differences")
         self.btn_diff_prev.setEnabled(False)
         self.btn_diff_next.setEnabled(False)
+
         self.cb_diff_ignore_ws = QCheckBox("Ignore whitespace")
         self.cb_diff_ignore_ws.setChecked(True)
         self.cb_diff_ignore_ws.setToolTip(
             "Compare lines without leading/trailing whitespace, so pure\n"
             "indentation changes are not reported as differences."
         )
+
         self.lbl_diff_stats = QLabel("")
         self.lbl_diff_stats.setProperty("accentText", True)
-        compare_search_row.addWidget(self.btn_diff_prev)
-        compare_search_row.addWidget(self.btn_diff_next)
-        compare_search_row.addWidget(self.cb_diff_ignore_ws)
-        compare_search_row.addWidget(self.lbl_diff_stats)
-        compare_search_row.addStretch()
+
+        compare_toolbar_row.addWidget(self.btn_compare_guid)
+        compare_toolbar_row.addSpacing(12)
+        compare_toolbar_row.addWidget(self.btn_diff_prev)
+        compare_toolbar_row.addWidget(self.btn_diff_next)
+        compare_toolbar_row.addSpacing(12)
+        compare_toolbar_row.addWidget(self.cb_diff_ignore_ws)
+        compare_toolbar_row.addStretch()
+        compare_toolbar_row.addWidget(self.lbl_diff_stats)
 
         compare_toolbar.setSizePolicy(QSizePolicy.Policy.Preferred,
                                       QSizePolicy.Policy.Fixed)
-        # Stretch 0: the row never grows beyond its own size hint.
         compare_layout.addWidget(compare_toolbar, 0)
 
-        compare_splitter = QSplitter(Qt.Orientation.Horizontal)
+        # --- Per-side inputs --------------------------------------------------
         self.compare_left_path = QComboBox()
         self.compare_right_path = QComboBox()
         for selector in (self.compare_left_path, self.compare_right_path):
             self._populate_path_selector(selector)
             selector.setCurrentText(self.combo_xml_path.currentText())
-        for selector in (self.compare_left_path, self.compare_right_path):
             selector.setSizePolicy(QSizePolicy.Policy.Expanding,
                                    QSizePolicy.Policy.Fixed)
+            selector.setToolTip("XML folder this pane reads from")
 
-        left_compare_panel = QWidget()
-        left_compare_layout = QVBoxLayout(left_compare_panel)
-        left_compare_layout.setContentsMargins(0, 0, 0, 0)
-        left_compare_layout.setSpacing(2)
-        left_compare_layout.addWidget(self.compare_left_path, 0)
-        self.compare_left_xml = DiffPane()
-        self.compare_left_xml.set_message("Enter a GUID to compare.")
-        left_compare_layout.addWidget(self.compare_left_xml, 1)
+        self.compare_guid_input = QLineEdit()
+        self.compare_guid_input.setPlaceholderText("GUID...")
+        self.compare_guid_input.setToolTip("GUID shown in the left pane")
+        self.compare_guid_input.setClearButtonEnabled(True)
 
-        right_compare_panel = QWidget()
-        right_compare_layout = QVBoxLayout(right_compare_panel)
-        right_compare_layout.setContentsMargins(0, 0, 0, 0)
-        right_compare_layout.setSpacing(2)
-        # Optional separate GUID for the right pane. Empty = same GUID as left.
-        right_header_row = QHBoxLayout()
-        right_header_row.setContentsMargins(0, 0, 0, 0)
-        right_header_row.setSpacing(4)
+        self.compare_watchlist = QComboBox()
+        self.compare_watchlist.setMinimumWidth(220)
+        self.compare_watchlist.setToolTip("Pick a watchlist entry as left GUID")
+
+        self.compare_right_watchlist = QComboBox()
+        self.compare_right_watchlist.setMinimumWidth(220)
+        self.compare_right_watchlist.setToolTip("Pick a watchlist entry as right GUID")
+
         self.compare_right_guid_input = QLineEdit()
-        self.compare_right_guid_input.setPlaceholderText("Right GUID (empty = same as left)")
+        self.compare_right_guid_input.setPlaceholderText("empty = same as left")
         self.compare_right_guid_input.setToolTip(
             "Optional GUID for the right pane.\n"
             "If empty, the GUID of the left pane is used."
         )
         self.compare_right_guid_input.setClearButtonEnabled(True)
-        self.compare_right_guid_input.setFixedWidth(230)
-        right_header_row.addWidget(self.compare_right_path, 1)
-        right_header_row.addWidget(self.compare_right_guid_input, 0)
-        right_compare_layout.addLayout(right_header_row, 0)
+
+        label_width = 55
+
+        def input_row(label_text, *widgets):
+            """One labelled input row; the label width is shared by both sides."""
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(4)
+            label = QLabel(label_text)
+            label.setFixedWidth(label_width)
+            row.addWidget(label)
+            for widget, stretch in widgets:
+                row.addWidget(widget, stretch)
+            return row
+
+        def compare_panel(title, rows, pane):
+            panel = QWidget()
+            layout = QVBoxLayout(panel)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(3)
+            header = QLabel(f" {title}")
+            header.setProperty("sectionHeader", True)
+            layout.addWidget(header, 0)
+            for row in rows:
+                layout.addLayout(row, 0)
+            layout.addWidget(pane, 1)
+            return panel
+
+        self.compare_left_xml = DiffPane()
+        self.compare_left_xml.set_message("Enter a GUID to compare.")
         self.compare_right_xml = DiffPane()
         self.compare_right_xml.set_message("Enter a GUID to compare.")
-        right_compare_layout.addWidget(self.compare_right_xml, 1)
 
+        left_compare_panel = compare_panel("LEFT", [
+            input_row("Folder:", (self.compare_left_path, 1)),
+            input_row("GUID:", (self.compare_guid_input, 1),
+                      (QLabel("Watchlist:"), 0), (self.compare_watchlist, 1)),
+        ], self.compare_left_xml)
+
+        right_compare_panel = compare_panel("RIGHT", [
+            input_row("Folder:", (self.compare_right_path, 1)),
+            input_row("GUID:", (self.compare_right_guid_input, 1),
+                      (QLabel("Watchlist:"), 0), (self.compare_right_watchlist, 1)),
+        ], self.compare_right_xml)
+
+        compare_splitter = QSplitter(Qt.Orientation.Horizontal)
         compare_splitter.addWidget(left_compare_panel)
         compare_splitter.addWidget(right_compare_panel)
         compare_splitter.setChildrenCollapsible(False)
@@ -1331,7 +1476,14 @@ class AnnoModTool(QMainWindow):
         self._diff_blocks = []
         self._diff_cursor = -1
         self._refresh_compare_watchlist()
-        self.compare_watchlist.currentIndexChanged.connect(self._select_compare_watchlist_guid)
+        self.compare_watchlist.currentIndexChanged.connect(
+            lambda index: self._select_compare_watchlist_guid(
+                self.compare_watchlist, self.compare_guid_input, index)
+        )
+        self.compare_right_watchlist.currentIndexChanged.connect(
+            lambda index: self._select_compare_watchlist_guid(
+                self.compare_right_watchlist, self.compare_right_guid_input, index)
+        )
         self.compare_guid_input.returnPressed.connect(self.compare_guid)
         self.compare_right_guid_input.returnPressed.connect(self.compare_guid)
         # Clearing the right GUID falls back to the left GUID immediately.
@@ -1351,21 +1503,46 @@ class AnnoModTool(QMainWindow):
         self.tabs.addTab(self.lib_tab, "Structure Library")   
         lib_layout = QVBoxLayout(self.lib_tab)
 
+        lib_search_row = QHBoxLayout()
+        lib_search_row.setSpacing(6)
         self.lib_filter = QLineEdit()
         self.lib_filter.setPlaceholderText("Search in paths...")
-        lib_layout.addWidget(self.lib_filter)
+        self.lib_filter.setClearButtonEnabled(True)
+        self.btn_lib_expand = QPushButton("Expand All")
+        self.btn_lib_collapse = QPushButton("Collapse All")
+        lib_search_row.addWidget(self.lib_filter, 1)
+        lib_search_row.addWidget(self.btn_lib_expand)
+        lib_search_row.addWidget(self.btn_lib_collapse)
+        lib_layout.addLayout(lib_search_row)
 
         self.lib_splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.lib_list = QListWidget()
+        # Paths such as "Buff/PossibleFluffTexts/Item" are shown as a tree,
+        # one node per path segment, so branches can be folded.
+        self.lib_tree = QTreeWidget()
+        self.lib_tree.setHeaderHidden(True)
+        self.lib_tree.setUniformRowHeights(True)
+        # Colours the search term inside every tree entry.
+        self._lib_highlighter = SearchHighlightDelegate(self.lib_tree)
+        self.lib_tree.setItemDelegate(self._lib_highlighter)
         self.lib_preview = QTextEdit()
         self.lib_preview.setReadOnly(True)
 
-        self.lib_splitter.addWidget(self.lib_list)
+        self.lib_splitter.addWidget(self.lib_tree)
         self.lib_splitter.addWidget(self.lib_preview)
 
         lib_layout.addWidget(self.lib_splitter)
-        self.lib_filter.textChanged.connect(self.filter_library)
-        self.lib_list.itemClicked.connect(self.preview_library_item)
+
+        # Debounced: rebuilding the tree on every keystroke is noticeable.
+        self._lib_debounce = QTimer(self)
+        self._lib_debounce.setSingleShot(True)
+        self._lib_debounce.setInterval(300)
+        self._lib_debounce.timeout.connect(self.filter_library)
+        self.lib_filter.textChanged.connect(lambda _t: self._lib_debounce.start())
+        self.lib_tree.currentItemChanged.connect(
+            lambda current, _previous: self.preview_library_item(current)
+        )
+        self.btn_lib_expand.clicked.connect(self.lib_tree.expandAll)
+        self.btn_lib_collapse.clicked.connect(self.lib_tree.collapseAll)
 
         # TAB 5: ENGINE LOG ############################################################
 
@@ -2274,13 +2451,60 @@ class AnnoModTool(QMainWindow):
         self.statusBar().showMessage(f"Loaded: {len(a)} assets")
 
     def filter_library(self):
+        """Build the structure tree from all paths that match the search.
 
-        self.lib_list.clear()
-        query = self.lib_filter.text().lower()
+        Every matching path is inserted together with its parent nodes, so a
+        hit like "BuffFactory/ProductionBuffs/Item" still appears below
+        "BuffFactory" and "ProductionBuffs". Matching nodes are shown bold;
+        parents that only exist to hold a hit stay normal.
+        """
+        timer = getattr(self, "_lib_debounce", None)
+        if timer is not None:
+            timer.stop()
+
+        query = self.lib_filter.text().strip().lower()
+        self._lib_highlighter.set_query(query)
+        catalog = set(self.structure_catalog_list)
+
+        self.lib_tree.setUpdatesEnabled(False)
+        self.lib_tree.clear()
+
+        nodes = {}
+        bold_font = None
+        match_count = 0
 
         for path in self.structure_catalog_list:
-            if query in path.lower():
-                self.lib_list.addItem(path)
+            if query and query not in path.lower():
+                continue
+            match_count += 1
+
+            parent = self.lib_tree.invisibleRootItem()
+            current = ""
+            for segment in path.split("/"):
+                current = f"{current}/{segment}" if current else segment
+                node = nodes.get(current)
+                if node is None:
+                    node = QTreeWidgetItem(parent, [segment])
+                    node.setData(0, Qt.ItemDataRole.UserRole, current)
+                    node.setToolTip(0, current)
+                    nodes[current] = node
+                parent = node
+
+            if query:
+                if bold_font is None:
+                    bold_font = parent.font(0)
+                    bold_font.setBold(True)
+                parent.setFont(0, bold_font)
+
+        # Without a search the tree starts folded, otherwise every hit is
+        # visible right away.
+        if query:
+            self.lib_tree.expandAll()
+        self.lib_tree.setUpdatesEnabled(True)
+
+        self.statusBar().showMessage(
+            f"Structure Library: {match_count} of {len(catalog)} paths", 3000
+        )
 
     def filter_texts(self):
         """Fill the Texts tab with the entries of the selected language.
@@ -2326,6 +2550,10 @@ class AnnoModTool(QMainWindow):
                     continue
             rows.append((str(key), text))
 
+        highlight_terms = list(include)
+        if guid_query:
+            highlight_terms.append(guid_query)
+        self._texts_highlighter.set_terms(highlight_terms)
         self.texts_model.set_rows(rows)
         self.texts_xml_view.clear()
         header = self.texts_table.horizontalHeader()
@@ -2359,6 +2587,7 @@ class AnnoModTool(QMainWindow):
 
         self.templates_list.clear()
         query = self.templates_filter.text().strip().lower()
+        self._templates_highlighter.set_query(query)
 
         for name in sorted(self.templates_db):
             if query in name.lower():
@@ -2380,7 +2609,10 @@ class AnnoModTool(QMainWindow):
 
     def preview_library_item(self, item):
 
-        path = item.text()
+        if item is None:
+            self.lib_preview.clear()
+            return
+        path = item.data(0, Qt.ItemDataRole.UserRole) or item.text(0)
         content_lines = []
 
         # 1. Display unique values collected for this path (e.g. for <EffectScope>)
@@ -2714,6 +2946,9 @@ class AnnoModTool(QMainWindow):
 
         xml_include, xml_exclude, remaining = self._split_xml_query(self.search.text())
         is_comma, include, exclude = self._parse_query(remaining.lower())
+        # Only the terms that must be present are coloured, not excluded ones.
+        self._table_highlighter.set_terms(include)
+        self.table.viewport().update()
         rows = self._search_rows_for(current_lang)
         # 3 = GUID/name/template only, 4 = plus every other translated text.
         column = 3 if self.cb_search_main_only.isChecked() else 4
@@ -2840,27 +3075,36 @@ class AnnoModTool(QMainWindow):
         self._refresh_compare_watchlist()
 
     def _refresh_compare_watchlist(self):
-        """Mirror watchlist entries into the GUID Compare selector."""
+        """Mirror watchlist entries into both GUID Compare selectors."""
         if not hasattr(self, "compare_watchlist"):
             return
 
-        selected_guid = self.compare_watchlist.currentData()
-        self.compare_watchlist.blockSignals(True)
-        self.compare_watchlist.clear()
-        self.compare_watchlist.addItem("Select watchlist entry...", None)
-        for guid in self.watchlist_guids:
-            self.compare_watchlist.addItem(
-                f"{guid} — {self._display_name_for_guid(guid)}", guid
-            )
+        selectors = [self.compare_watchlist]
+        if hasattr(self, "compare_right_watchlist"):
+            selectors.append(self.compare_right_watchlist)
 
-        selected_index = self.compare_watchlist.findData(selected_guid)
-        self.compare_watchlist.setCurrentIndex(selected_index if selected_index >= 0 else 0)
-        self.compare_watchlist.blockSignals(False)
+        for selector in selectors:
+            selected_guid = selector.currentData()
+            selector.blockSignals(True)
+            selector.clear()
+            selector.addItem("Select watchlist entry...", None)
+            for guid in self.watchlist_guids:
+                selector.addItem(
+                    f"{guid} — {self._display_name_for_guid(guid)}", guid
+                )
+            selected_index = selector.findData(selected_guid)
+            selector.setCurrentIndex(selected_index if selected_index >= 0 else 0)
+            selector.blockSignals(False)
 
-    def _select_compare_watchlist_guid(self, index):
-        guid = self.compare_watchlist.itemData(index)
+    def _select_compare_watchlist_guid(self, selector, guid_input, index):
+        """Copy the picked watchlist GUID into the GUID field of that side."""
+        guid = selector.itemData(index)
         if guid:
-            self.compare_guid_input.setText(str(guid))
+            # Avoid the textChanged handler of the right field firing a
+            # second comparison before the new GUID is in place.
+            guid_input.blockSignals(True)
+            guid_input.setText(str(guid))
+            guid_input.blockSignals(False)
             self.compare_guid()
 
     def add_selected_to_watchlist(self):
