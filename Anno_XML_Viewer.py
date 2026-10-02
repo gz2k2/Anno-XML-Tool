@@ -22,7 +22,8 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QMenu, QDialog, QListWidget, QListWidgetItem, 
                              QDialogButtonBox, QComboBox, QTabWidget, QGroupBox,
                              QCheckBox, QProgressDialog, QSizePolicy, QTableView,
-                             QStyledItemDelegate, QStyleOptionViewItem, QStyle)
+                             QStyledItemDelegate, QStyleOptionViewItem, QStyle,
+                             QSpinBox)
 from PyQt6.QtCore import (Qt, QThread, pyqtSignal, QSettings, QUrl, QTimer,
                           QAbstractTableModel, QModelIndex)
 from PyQt6.QtGui import (QSyntaxHighlighter, QTextCharFormat, QColor, QFont, QAction,
@@ -44,6 +45,10 @@ XML_PATH_GROUPS = anno_game.path_groups()
 #: Upper bound for the parsed-asset cache. Purely a click-path cache, so a
 #: few hundred entries cover every realistic navigation sequence.
 ELEMENT_CACHE_LIMIT = 512
+
+#: Allowed range for the font sizes under Settings > General > Text.
+FONT_SIZE_MIN = 6
+FONT_SIZE_MAX = 30
 
 DEFAULT_BUFF_FILTER_TAGS = sorted(
     {tag for game in anno_game.all_games() for tag in game.default_buff_tags}
@@ -154,6 +159,9 @@ class XMLHighlighter(QSyntaxHighlighter):
 
         text_format = QTextCharFormat()
         text_format.setForeground(colors["text"])
+        # Tag contents such as 139860 in <IslandAsset>139860</IslandAsset>
+        # are shown bold so values stand out from the markup.
+        text_format.setFontWeight(QFont.Weight.Bold)
         self.styles["text"] = text_format
 
         if rehighlight:
@@ -898,6 +906,15 @@ class AnnoModTool(QMainWindow):
         )
         self.current_theme = self.apply_theme(self.current_theme)
 
+        # Defaults: the application font for lists, 10 pt for XML views.
+        self.default_font_size_results = self._read_font_size(
+            "", QApplication.font().pointSize())
+        self.default_font_size_xml = 10
+        self.font_size_results = self._read_font_size(
+            "UI/font_size_results", self.default_font_size_results)
+        self.font_size_xml = self._read_font_size(
+            "UI/font_size_xml", self.default_font_size_xml)
+
         self._active_game = None
         self.assets_db, self.templates_db, self.languages_db = {}, {}, {}
         self.worker = None
@@ -1610,6 +1627,69 @@ class AnnoModTool(QMainWindow):
         general_layout.addWidget(language_group)
         general_layout.addWidget(appearance_group)
 
+        text_group = QGroupBox("Text")
+        text_group_layout = QVBoxLayout(text_group)
+
+        def font_size_row(label_text, tooltip, value, default):
+            row = QHBoxLayout()
+            row.setSpacing(4)
+            label = QLabel(label_text)
+            label.setFixedWidth(170)
+            spin = QSpinBox()
+            spin.setRange(FONT_SIZE_MIN, FONT_SIZE_MAX)
+            spin.setSuffix(" pt")
+            spin.setValue(value)
+            spin.setFixedWidth(70)
+            spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            spin.setToolTip(tooltip)
+            # The built-in arrows are invisible in some themes, so explicit
+            # -/+ buttons are used instead.
+            spin.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+            btn_minus = QPushButton("\u2212")
+            btn_plus = QPushButton("+")
+            for button, tip in ((btn_minus, "Smaller"), (btn_plus, "Larger")):
+                button.setFixedSize(32, 28)
+                # Local stylesheet: larger, bold symbol with minimal padding
+                # so it is not clipped by the theme's button padding.
+                button.setStyleSheet(
+                    "QPushButton { font-size: 16pt; font-weight: bold; padding: 0px; }"
+                )
+                button.setToolTip(tip)
+                button.setAutoRepeat(True)
+            btn_minus.clicked.connect(spin.stepDown)
+            btn_plus.clicked.connect(spin.stepUp)
+            default_label = QLabel(f"Default: {default} pt")
+            default_label.setEnabled(False)
+            row.addWidget(label)
+            row.addWidget(btn_minus)
+            row.addWidget(spin)
+            row.addWidget(btn_plus)
+            row.addSpacing(8)
+            row.addWidget(default_label)
+            row.addStretch()
+            text_group_layout.addLayout(row)
+            return spin
+
+        self.spin_font_results = font_size_row(
+            "Result lists font size:",
+            "Font size of the result lists and trees:\n"
+            "Asset Viewer, References, Watchlist, Properties,\n"
+            "Templates, Texts and Structure Library.",
+            self.font_size_results,
+            self.default_font_size_results,
+        )
+        self.spin_font_xml = font_size_row(
+            "XML views font size:",
+            "Font size of every XML view, the GUID Compare panes\n"
+            "and the Engine Log.",
+            self.font_size_xml,
+            self.default_font_size_xml,
+        )
+        # Applied live; the value is stored right away as well.
+        self.spin_font_results.valueChanged.connect(self._on_font_size_changed)
+        self.spin_font_xml.valueChanged.connect(self._on_font_size_changed)
+        general_layout.addWidget(text_group)
+
         game_folders_group = QGroupBox("Game Folders")
         game_folders_layout = QVBoxLayout(game_folders_group)
         self.edit_anno117_folder = self._create_folder_setting_row(
@@ -1733,10 +1813,11 @@ class AnnoModTool(QMainWindow):
         self.btn_watch_remove.clicked.connect(self.remove_selected_from_watchlist)
         self.btn_export.clicked.connect(self.export_mod)
 
-        code_font = QFont("Consolas", 10)
+        code_font = QFont("Consolas", self.font_size_xml)
 
         if not code_font.fixedPitch():
-            code_font = QFont("Monospace", 10)
+            code_font = QFont("Consolas", self.font_size_xml)
+        self._code_font_family = code_font.family()
 
         self.xml_views = [
             self.xml_editor, 
@@ -1765,6 +1846,8 @@ class AnnoModTool(QMainWindow):
             if view != self.debug_console:
                 highlighter = XMLHighlighter(view.document(), xml_colors)
                 self.highlighters.append(highlighter)
+
+        self._apply_font_sizes()
 
         self.append_debug_log(f"[theme] {theme_manager.diagnostics()}")
         if self._startup_message:
@@ -1947,10 +2030,18 @@ class AnnoModTool(QMainWindow):
             (background.green() + foreground.green()) // 4 + background.green() // 2,
             (background.blue() + foreground.blue()) // 4 + background.blue() // 2,
         )
+        # Font family and size are part of the local stylesheet on purpose:
+        # some themes assign a font to QTextEdit inside splitters/tabs, and a
+        # stylesheet font always beats setFont(). Pinning it here gives every
+        # XML view (Templates and Structure Library included) the same font.
+        family = getattr(self, "_code_font_family", "Consolas")
+        size = getattr(self, "font_size_xml", 10)
         return (f"background-color: {background.name()};"
                 f" color: {foreground.name()};"
                 f" border: 1px solid {border.name()};"
-                f" selection-background-color: #264f78;")
+                f" selection-background-color: #264f78;"
+                f" font-family: '{family}', monospace;"
+                f" font-size: {size}pt;")
 
     def _tree_colors(self):
         """Property-tree colours, darkened on light themes for readability."""
@@ -1999,6 +2090,10 @@ class AnnoModTool(QMainWindow):
                 "QTabBar::tab { padding: 6px 16px; font-weight: normal; }"
                 f"QTabBar::tab:selected {{ border-bottom: 2px solid {colors['accent'].name()}; }}"
             )
+        # A new stylesheet must not reset the configured font sizes.
+        if hasattr(self, "font_size_xml"):
+            self._apply_font_sizes()
+
         if getattr(self, "current_xml_root", None) is not None:
             self.refresh_ui_from_xml()
 
@@ -2007,6 +2102,98 @@ class AnnoModTool(QMainWindow):
             self._highlight_guid_compare_differences()
 
         return applied
+
+    def _read_font_size(self, key, default):
+        """Font size from config.ini, clamped to the allowed range."""
+        try:
+            raw = self.settings.value(key, default) if key else default
+            value = int(raw or default)
+        except (TypeError, ValueError):
+            value = default
+        if value <= 0:
+            value = 10
+        return max(FONT_SIZE_MIN, min(FONT_SIZE_MAX, value))
+
+    def _result_views(self):
+        """Lists, tables and trees that show search results."""
+        names = ("table", "reverse_search_table", "watchlist_table", "prop_tree",
+                 "templates_list", "texts_table", "lib_tree")
+        return [view for view in (getattr(self, name, None) for name in names)
+                if view is not None]
+
+    def _code_views(self):
+        """Every view that shows XML (plus the Engine Log)."""
+        views = list(getattr(self, "xml_views", []))
+        for name in ("compare_left_xml", "compare_right_xml"):
+            view = getattr(self, name, None)
+            if view is not None:
+                views.append(view)
+        return views
+
+    def _apply_font_sizes(self):
+        """Push the configured font sizes to all result and XML views."""
+        for view in self._result_views():
+            font = QFont(view.font())
+            font.setPointSize(self.font_size_results)
+            view.setFont(font)
+            # Table rows do not grow with the font on their own.
+            vertical = getattr(view, "verticalHeader", None)
+            if vertical is not None:
+                row_height = QFontMetrics(font).height() + 6
+                vertical().setDefaultSectionSize(row_height)
+                vertical().setMinimumSectionSize(row_height)
+            header = getattr(view, "header", None) or getattr(view, "horizontalHeader", None)
+            if header is not None:
+                header().setFont(font)
+
+        self._match_tree_to_list_style()
+
+        # Re-apply the XML stylesheet so its font-size follows the setting.
+        code_stylesheet = self._code_view_stylesheet()
+        for view in getattr(self, "xml_views", []):
+            view.setStyleSheet(code_stylesheet)
+
+        family = getattr(self, "_code_font_family", "Consolas")
+        for view in self._code_views():
+            font = QFont(family, self.font_size_xml)
+            font.setStyleHint(QFont.StyleHint.Monospace)
+            view.setFont(font)
+            document = getattr(view, "document", None)
+            if document is not None:
+                document().setDefaultFont(font)
+
+    def _match_tree_to_list_style(self):
+        """Give the Structure Library tree the exact look of the Templates list.
+
+        The theme stylesheet styles QListWidget and QTreeWidget separately,
+        so the tree ended up with a different font and a dimmer text colour.
+        Font family and text colour are taken from the polished Templates
+        list and pinned on the tree with a local stylesheet, which takes
+        precedence over the application-wide theme.
+        """
+        reference = getattr(self, "templates_list", None)
+        tree = getattr(self, "lib_tree", None)
+        if reference is None or tree is None:
+            return
+        reference.ensurePolished()
+        family = reference.font().family()
+        color = reference.palette().color(QPalette.ColorRole.Text).name()
+        tree.setStyleSheet(
+            "QTreeWidget {"
+            f" font-family: '{family}';"
+            f" font-size: {self.font_size_results}pt;"
+            f" color: {color};"
+            " }"
+        )
+
+    def _on_font_size_changed(self, _value=None):
+        """Apply a new font size from the settings immediately."""
+        self.font_size_results = self.spin_font_results.value()
+        self.font_size_xml = self.spin_font_xml.value()
+        self._apply_font_sizes()
+        self.settings.setValue("UI/font_size_results", self.font_size_results)
+        self.settings.setValue("UI/font_size_xml", self.font_size_xml)
+        self.settings.sync()
 
     def _on_theme_selected(self, index):
         """Live-switch the theme when the user picks one in the settings."""
@@ -2275,6 +2462,8 @@ class AnnoModTool(QMainWindow):
             self.settings.setValue(group_settings_key, self.xml_path_groups[group_key])
         self.settings.setValue("Paths/xml_path", self.combo_xml_path.currentText())
         self.settings.setValue("Paths/default_lang", lang)
+        self.settings.setValue("UI/font_size_results", self.font_size_results)
+        self.settings.setValue("UI/font_size_xml", self.font_size_xml)
         self.settings.setValue("UI/theme", self.current_theme)
         self.settings.setValue("Paths/anno117_folder", self.edit_anno117_folder.text().strip())
         self.settings.setValue("Paths/anno1800_folder", self.edit_anno1800_folder.text().strip())
@@ -2455,8 +2644,8 @@ class AnnoModTool(QMainWindow):
 
         Every matching path is inserted together with its parent nodes, so a
         hit like "BuffFactory/ProductionBuffs/Item" still appears below
-        "BuffFactory" and "ProductionBuffs". Matching nodes are shown bold;
-        parents that only exist to hold a hit stay normal.
+        "BuffFactory" and "ProductionBuffs". Hits are marked by the search
+        highlight only; every node uses the plain list font, like Templates.
         """
         timer = getattr(self, "_lib_debounce", None)
         if timer is not None:
@@ -2470,7 +2659,6 @@ class AnnoModTool(QMainWindow):
         self.lib_tree.clear()
 
         nodes = {}
-        bold_font = None
         match_count = 0
 
         for path in self.structure_catalog_list:
@@ -2489,12 +2677,6 @@ class AnnoModTool(QMainWindow):
                     node.setToolTip(0, current)
                     nodes[current] = node
                 parent = node
-
-            if query:
-                if bold_font is None:
-                    bold_font = parent.font(0)
-                    bold_font.setBold(True)
-                parent.setFont(0, bold_font)
 
         # Without a search the tree starts folded, otherwise every hit is
         # visible right away.
@@ -3311,7 +3493,7 @@ class AnnoModTool(QMainWindow):
                 template_value = (template.text or "").strip()
                 template_item = QTreeWidgetItem(self.prop_tree, ["Template", template_value, ""])
                 template_item.setData(0, Qt.ItemDataRole.UserRole, template)
-                template_font = template_item.font(0)
+                template_font = QFont(self.prop_tree.font())
                 template_font.setBold(True)
                 template_item.setFont(0, template_font)
                 template_item.setForeground(0, self._tree_colors()["group"])
@@ -3342,7 +3524,7 @@ class AnnoModTool(QMainWindow):
             
             if has_children:
                 item.setForeground(0, self._tree_colors()["group"])
-                font = item.font(0)
+                font = QFont(target.font())
                 font.setBold(True)
 
                 item.setFont(0, font)
