@@ -12,6 +12,7 @@ from guid_diff_view import (DiffPane, SyncScrollGroup, set_diff_texts,
 import guid_diff_view
 import theme_manager
 import anno_game
+import anno_value_only_tags
 from anno_loader import AnnoLoader
 from datetime import datetime
 import xml.etree.ElementTree as ET
@@ -49,6 +50,13 @@ ELEMENT_CACHE_LIMIT = 512
 #: Allowed range for the font sizes under Settings > General > Text.
 FONT_SIZE_MIN = 6
 FONT_SIZE_MAX = 30
+
+#: Separate file for the Buff/Effect XML tags (next to config.ini).
+BUFF_CONFIG_FILE = "config_buffs.ini"
+BUFF_TAGS_KEY = "Buffs/tags"
+
+#: Horizontal distance (px) between the mouse cursor and a context menu.
+CONTEXT_MENU_OFFSET_X = 20
 
 DEFAULT_BUFF_FILTER_TAGS = sorted(
     {tag for game in anno_game.all_games() for tag in game.default_buff_tags}
@@ -601,9 +609,30 @@ class AnnoModTool(QMainWindow):
         widget.takeItem(row)
         self._save_xml_paths()
 
+    def _migrate_buff_settings(self):
+        """Move the [Buffs] section from config.ini to config_buffs.ini.
+
+        Earlier versions stored the Buff/Effect XML tags in config.ini. The
+        list is copied once (only if the new file has none yet) and the old
+        section is removed from config.ini afterwards.
+        """
+        legacy = self.settings.value(BUFF_TAGS_KEY, None)
+        if legacy is None and "Buffs" not in self.settings.childGroups():
+            return
+        if legacy is not None and self.buff_settings.value(BUFF_TAGS_KEY, None) is None:
+            self.buff_settings.setValue(BUFF_TAGS_KEY, legacy)
+            self.buff_settings.sync()
+        self.settings.remove("Buffs")
+        self.settings.sync()
+
+    def _save_buff_filter_tags(self, tags):
+        """Write the Buff/Effect XML tags to config_buffs.ini."""
+        self.buff_settings.setValue(BUFF_TAGS_KEY, "\n".join(tags))
+        self.buff_settings.sync()
+
     def _load_buff_filter_tags(self):
 
-        saved_tags = self.settings.value("Buffs/tags", "")
+        saved_tags = self.buff_settings.value(BUFF_TAGS_KEY, "")
         saved_tags = str(saved_tags).replace("\\n", "\n")
         tags = [tag.strip() for tag in re.split(r"[,\n]", saved_tags) if tag.strip()]
 
@@ -892,6 +921,12 @@ class AnnoModTool(QMainWindow):
         config_path = os.path.join(base_dir, "config.ini")
         self.settings = QSettings(config_path, QSettings.Format.IniFormat)
 
+        # The Buff/Effect XML tags live in their own file so the list can be
+        # shared or reset without touching the rest of the configuration.
+        buffs_path = os.path.join(base_dir, BUFF_CONFIG_FILE)
+        self.buff_settings = QSettings(buffs_path, QSettings.Format.IniFormat)
+        self._migrate_buff_settings()
+
         # Parsed XML folders are indexed here so a known folder does not have
         # to be re-parsed on every start. Safe to delete at any time.
         self.cache_dir = os.path.join(base_dir, "cache")
@@ -1177,6 +1212,9 @@ class AnnoModTool(QMainWindow):
 
         self.prop_tree = QTreeWidget()
         self.prop_tree.setHeaderLabels(["Property", "Value", "Text"])
+        # Right-click: copy a cell, or mark a property as value-only tag.
+        self.prop_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.prop_tree.customContextMenuRequested.connect(self._show_prop_tree_context_menu)
 
         # Spaltenbreiten definieren
         self.prop_tree.setColumnWidth(0, 200)
@@ -2274,6 +2312,7 @@ class AnnoModTool(QMainWindow):
 
     def _is_value_only(self, tag):
         """True when *tag* holds a plain quantity that references nothing."""
+        # anno_game.AnnoGame.is_value_only also covers config_value_only.ini.
         checker = getattr(self.active_game, "is_value_only", None)
         return bool(checker(tag)) if checker else False
 
@@ -2467,7 +2506,7 @@ class AnnoModTool(QMainWindow):
         self.settings.setValue("UI/theme", self.current_theme)
         self.settings.setValue("Paths/anno117_folder", self.edit_anno117_folder.text().strip())
         self.settings.setValue("Paths/anno1800_folder", self.edit_anno1800_folder.text().strip())
-        self.settings.setValue("Buffs/tags", "\n".join(tags))
+        self._save_buff_filter_tags(tags)
         self.settings.sync()
 
         active_path = self.combo_xml_path.currentText()
@@ -3538,6 +3577,251 @@ class AnnoModTool(QMainWindow):
                 if klartext:
                     item.setForeground(2, self._tree_colors()["name"])
 
+    @staticmethod
+    def _new_context_menu(parent):
+        """QMenu whose disabled entries are readable on every theme.
+
+        Disabled entries use the normal text colour and are struck through
+        instead of being greyed out.
+
+        Setting the palette alone is not enough: the theme stylesheet styles
+        ``QMenu::item:disabled`` itself, and a stylesheet always wins over the
+        palette. A local stylesheet on the menu overrides exactly that rule
+        and leaves hover/selection to the theme.
+        """
+        menu = QMenu(parent)
+        menu.ensurePolished()
+        # After polishing, the palette carries the colour the theme
+        # stylesheet uses for normal menu text.
+        text_color = menu.palette().color(QPalette.ColorGroup.Active,
+                                          QPalette.ColorRole.WindowText).name()
+        menu.setStyleSheet(
+            "QMenu::item:disabled {"
+            f" color: {text_color};"
+            " text-decoration: line-through;"
+            " }"
+        )
+
+        def strike_disabled_entries():
+            # Fallback for styles that ignore text-decoration in menus.
+            for action in menu.actions():
+                if action.isSeparator():
+                    continue
+                font = QFont(action.font())
+                font.setStrikeOut(not action.isEnabled())
+                action.setFont(font)
+
+        menu.aboutToShow.connect(strike_disabled_entries)
+        return menu
+
+    @staticmethod
+    def _context_menu_pos(viewport, pos):
+        """Global position for a context menu, shifted right of the cursor.
+
+        Qt opens a menu with its top-left corner exactly at the cursor, so
+        moving the mouse straight down runs into the menu. The offset keeps
+        the column below the cursor free.
+        """
+        global_pos = viewport.mapToGlobal(pos)
+        global_pos.setX(global_pos.x() + CONTEXT_MENU_OFFSET_X)
+        return global_pos
+
+    def _show_prop_tree_context_menu(self, pos):
+        """Context menu of the property tree (bottom left pane).
+
+        * Copy - copies the text of the clicked cell.
+        * Add to Value only Tags - only on the Property column of an entry
+          that holds a value. The tag is stored in config_value_only.ini and is no
+          longer resolved as text or asset reference.
+        * Add Tag to BUFFS / EFFECTS / Remove Tag from BUFFS / EFFECTS - on
+          the Property column of any entry except <Template>. Edits the list
+          Settings > XML Settings > Buff/Effect XML tags.
+        """
+        item = self.prop_tree.itemAt(pos)
+        if item is None:
+            return
+        column = self.prop_tree.columnAt(pos.x())
+        if column < 0:
+            return
+        self.prop_tree.setCurrentItem(item, column)
+
+        cell_text = item.text(column)
+        menu = self._new_context_menu(self.prop_tree)
+        action_copy = menu.addAction("Copy")
+        action_copy.setEnabled(bool(cell_text))
+
+        action_value_only = None
+        value_only_mode = None
+        tag = item.text(0).strip()
+        # Group nodes (with children) and the <Template> entry hold no value.
+        is_template_row = item.parent() is None and tag == "Template"
+        is_value_entry = item.childCount() == 0 and not is_template_row
+        if column == 0 and tag and is_value_entry:
+            menu.addSeparator()
+            if anno_value_only_tags.is_user_tag(tag):
+                # Added earlier via this menu -> can be taken back.
+                value_only_mode = "remove"
+                action_value_only = menu.addAction("Remove from Value only Tags")
+                action_value_only.setToolTip(
+                    f"Removes <{tag}> from {anno_value_only_tags.user_tags_file()}."
+                )
+            elif anno_value_only_tags.is_builtin(tag):
+                # Part of the built-in list in anno_value_only_tags.py.
+                value_only_mode = None
+                action_value_only = menu.addAction("Built-in Value only Tag")
+                action_value_only.setEnabled(False)
+                action_value_only.setToolTip(
+                    f"<{tag}> is defined in anno_value_only_tags.py and cannot be removed here."
+                )
+            else:
+                value_only_mode = "add"
+                action_value_only = menu.addAction("Add to Value only Tags")
+            menu.setToolTipsVisible(True)
+            if value_only_mode == "add" and tag in getattr(self.active_game, "text_id_tags", ()):
+                action_value_only.setToolTip(
+                    f"<{tag}> is a text reference in this game and stays resolved there."
+                )
+
+        # Buff/effect tags are usually containers (<Effects><Item>...), so
+        # group nodes are allowed here as well - only <Template> is excluded.
+        action_buff_tag = None
+        if column == 0 and tag and not is_template_row:
+            if action_value_only is None:
+                menu.addSeparator()
+            buff_tag_present = tag in self._buff_filter_tags
+            action_buff_tag = menu.addAction(
+                "Remove Tag from BUFFS / EFFECTS" if buff_tag_present
+                else "Add Tag to BUFFS / EFFECTS"
+            )
+
+        chosen = menu.exec(self._context_menu_pos(self.prop_tree.viewport(), pos))
+        if chosen is None:
+            return
+        if chosen == action_copy:
+            QApplication.clipboard().setText(cell_text)
+            self.statusBar().showMessage(f"Copied: {cell_text}", 3000)
+        elif action_buff_tag is not None and chosen == action_buff_tag:
+            if buff_tag_present:
+                self._remove_buff_tag_from_tree(tag)
+            else:
+                self._add_buff_tag_from_tree(tag)
+        elif chosen == action_value_only:
+            if value_only_mode == "remove":
+                self._remove_value_only_tag(tag)
+            elif value_only_mode == "add":
+                self._add_value_only_tag(tag)
+
+    def _add_buff_tag_from_tree(self, tag):
+        """Add *tag* to the Buff/Effect XML tags (same list as in Settings).
+
+        The settings list widget, the active tag list, the filter selection
+        and config_buffs.ini are all updated, so the Buffs/Effects pane and the
+        export pick the tag up immediately.
+        """
+        tag = (tag or "").strip()
+        if not tag or tag in self._buff_filter_tags:
+            return
+
+        item = QListWidgetItem(tag)
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+        self.list_buff_filter_tags.addItem(item)
+        self.list_buff_filter_tags.sortItems()
+
+        self._buff_filter_tags = sorted(set(self._buff_filter_tags) | {tag})
+        # A new category is visible right away in the Buffs/Effects filter.
+        self._buff_filter_selected = set(self._buff_filter_selected) | {tag}
+
+        self._save_buff_filter_tags(self._buff_filter_tags)
+
+        self.append_debug_log(f"[buffs] Added <{tag}> to the Buff/Effect XML tags.")
+        self.statusBar().showMessage(f"<{tag}> added to BUFFS / EFFECTS", 4000)
+
+        if self.current_xml_root is not None:
+            self.update_buffs_preview()
+
+    def _remove_buff_tag_from_tree(self, tag):
+        """Remove *tag* from the Buff/Effect XML tags (same list as in Settings).
+
+        The last remaining tag is kept: an empty list is replaced by the
+        default list when settings are saved, so removing it would silently
+        restore every default tag.
+        """
+        tag = (tag or "").strip()
+        if not tag or tag not in self._buff_filter_tags:
+            return
+        if len(self._buff_filter_tags) <= 1:
+            self.statusBar().showMessage(
+                "The last Buff/Effect XML tag cannot be removed", 4000
+            )
+            return
+
+        for row in range(self.list_buff_filter_tags.count() - 1, -1, -1):
+            if self.list_buff_filter_tags.item(row).text().strip() == tag:
+                self.list_buff_filter_tags.takeItem(row)
+
+        self._buff_filter_tags = [t for t in self._buff_filter_tags if t != tag]
+        self._buff_filter_selected = set(self._buff_filter_selected) - {tag}
+
+        self._save_buff_filter_tags(self._buff_filter_tags)
+
+        self.append_debug_log(f"[buffs] Removed <{tag}> from the Buff/Effect XML tags.")
+        self.statusBar().showMessage(f"<{tag}> removed from BUFFS / EFFECTS", 4000)
+
+        if self.current_xml_root is not None:
+            self.update_buffs_preview()
+
+    def _add_value_only_tag(self, tag):
+        """Store *tag* in config_value_only.ini and apply it immediately."""
+        try:
+            added = anno_value_only_tags.add_user_tag(tag)
+        except OSError as exc:
+            QMessageBox.warning(
+                self, "Value only Tags",
+                f"Could not write {anno_value_only_tags.user_tags_file()}:\n{exc}"
+            )
+            return
+        if not added:
+            self.statusBar().showMessage(f"<{tag}> is already a value-only tag", 3000)
+            return
+
+        # The game profiles read config_value_only.ini live, so the property tree
+        # is correct right away. The search texts and the References pane
+        # come from the index; it is rebuilt with the next load because the
+        # rule fingerprint in its folder name has changed.
+        self.append_debug_log(
+            f"[value-only] Added <{tag}> to {anno_value_only_tags.user_tags_file()}. "
+            "References and search index are updated on the next folder load."
+        )
+        self.statusBar().showMessage(f"<{tag}> added to Value only Tags", 4000)
+
+        # Redraw the tree so the Text column of that tag is cleared.
+        if self.current_xml_root is not None:
+            self.refresh_ui_from_xml()
+
+    def _remove_value_only_tag(self, tag):
+        """Remove *tag* from config_value_only.ini and apply it immediately."""
+        try:
+            removed = anno_value_only_tags.remove_user_tag(tag)
+        except OSError as exc:
+            QMessageBox.warning(
+                self, "Value only Tags",
+                f"Could not write {anno_value_only_tags.user_tags_file()}:\n{exc}"
+            )
+            return
+        if not removed:
+            self.statusBar().showMessage(f"<{tag}> is not a user-defined value-only tag", 3000)
+            return
+
+        self.append_debug_log(
+            f"[value-only] Removed <{tag}> from {anno_value_only_tags.user_tags_file()}. "
+            "References and search index are updated on the next folder load."
+        )
+        self.statusBar().showMessage(f"<{tag}> removed from Value only Tags", 4000)
+
+        # Redraw the tree so the Text column of that tag is resolved again.
+        if self.current_xml_root is not None:
+            self.refresh_ui_from_xml()
+
     def _show_asset_context_menu(self, table, pos):
         """Context menu for the GUID result, reference and watchlist tables."""
         item = table.itemAt(pos)
@@ -3552,11 +3836,22 @@ class AnnoModTool(QMainWindow):
 
         table.selectRow(item.row())
 
-        menu = QMenu(table)
+        # Text of the clicked cell (GUID, Display Name or Template).
+        cell_text = item.text()
+
+        menu = self._new_context_menu(table)
+        action_copy = menu.addAction("Copy")
+        action_copy.setEnabled(bool(cell_text))
+        menu.addSeparator()
         action_export = menu.addAction("XML Export")
         action_export.setEnabled(guid in self.assets_db)
-        chosen = menu.exec(table.viewport().mapToGlobal(pos))
-        if chosen == action_export:
+        chosen = menu.exec(self._context_menu_pos(table.viewport(), pos))
+        if chosen is None:
+            return
+        if chosen == action_copy:
+            QApplication.clipboard().setText(cell_text)
+            self.statusBar().showMessage(f"Copied: {cell_text}", 3000)
+        elif chosen == action_export:
             self.export_asset_xml(guid)
 
     def export_mod(self):

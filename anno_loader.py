@@ -16,6 +16,9 @@ Three things happen here that used to cost a full extra pass over the data:
 from __future__ import annotations
 
 import copy
+import os
+import re
+import shutil
 import xml.etree.ElementTree as ET
 
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -54,7 +57,10 @@ class AnnoLoader(QThread):
         self.folder = folder_path
         # Fall back to sniffing the folder when no game was supplied.
         self.game = game or anno_game.detect_game(folder_path) or anno_game.get_game("anno117")
-        self.cache_dir = cache_dir
+        # The index depends on the value-only rules (text ids, references),
+        # so it lives in a sub folder named after them. Adding a tag via the
+        # viewer therefore forces a fresh parse instead of serving stale data.
+        self.cache_dir = self._rules_cache_dir(cache_dir)
         self.preferred_language = preferred_language
 
         self.structure_catalog = {}
@@ -159,9 +165,36 @@ class AnnoLoader(QThread):
         )
         return True
 
+    def _rules_cache_dir(self, cache_dir: str) -> str:
+        if not cache_dir:
+            return cache_dir
+        return os.path.join(cache_dir,
+                            f"{self.game.key}_{self.game.rules_fingerprint()}")
+
+    def _drop_stale_rule_caches(self) -> None:
+        """Remove index folders of this game built with older rules."""
+        parent = os.path.dirname(self.cache_dir)
+        current = os.path.basename(self.cache_dir)
+        pattern = re.compile(rf"^{re.escape(self.game.key)}_[0-9a-f]{{12}}$")
+        try:
+            names = os.listdir(parent)
+        except OSError:
+            return
+        for name in names:
+            path = os.path.join(parent, name)
+            if name != current and pattern.match(name) and os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+                self.debug_log.emit(f"Outdated index removed: {name}")
+
     def _write_cache(self, expected, assets, templates, reverse_index) -> None:
         if not self.cache_dir:
             return
+        try:
+            os.makedirs(self.cache_dir, exist_ok=True)
+        except OSError as exc:
+            self.debug_log.emit(f"WARNING: index folder could not be created: {exc}")
+            return
+        self._drop_stale_rule_caches()
         written = anno_index.save(
             self.cache_dir, self.folder, self.game.key, expected,
             assets, self._store, templates, reverse_index,

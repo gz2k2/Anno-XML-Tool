@@ -1,4 +1,23 @@
-## Changelog
+# Changelog
+
+## 0.20.5-beta
+
+### Added
+
+- **Context menu in the property tree** (bottom left pane):
+  - **Copy** – copies the text of the clicked cell (Property, Value or Text).
+  - **Add to Value only Tags** / **Remove from Value only Tags** – marks a property as plain value, so it is no longer resolved as text or asset reference. Available on the *Property* column of entries that hold a value. Built-in tags are shown as *Built-in Value only Tag* and cannot be removed here.
+  - **Add Tag to BUFFS / EFFECTS** / **Remove Tag from BUFFS / EFFECTS** – edits the *Buff/Effect XML tags* list (same list as in *Settings › XML Settings*). The Buffs/Effects pane updates immediately. The last remaining tag cannot be removed.
+- **Copy** in the context menu of the asset table, References and Watchlist (next to *XML Export*).
+- **`config_value_only.ini`:** stores user-defined value-only tags. They are merged with the built-in list and apply to Anno 117 and Anno 1800. Tags that are a text reference in a game (e.g. `LineID` in Anno 117) stay resolved there.
+- **`config_buffs.ini`:** separate file for the Buff/Effect XML tags.
+
+### Changed
+
+- **Buff/Effect XML tags moved** from `config.ini` to `config_buffs.ini`. Existing tags are migrated automatically on first start and the `[Buffs]` section is removed from `config.ini`.
+- **Context menus** open slightly to the right of the cursor, so the mouse can be moved straight down without touching the menu.
+- **Disabled context menu entries** use the normal text color and are struck through instead of being greyed out, so they stay readable on dark themes.
+
 
 ### [0.20.2-beta] - 2026-10-02
 

@@ -38,8 +38,11 @@ need to know which game is loaded::
 
 from __future__ import annotations
 
+import hashlib
 import os
 import xml.etree.ElementTree as ET
+
+import anno_value_only_tags
 
 #: Cache for :meth:`AnnoGame.find_files`, keyed by (game key, folder).
 _FILE_CACHE: dict = {}
@@ -205,9 +208,33 @@ class AnnoGame:
             return False
         return int(value) >= self.min_text_id_value
 
+    def effective_value_only_tags(self) -> frozenset:
+        """Value-only tags of this game including the user additions.
+
+        Tags added in the viewer (value_only.ini) are read live from
+        :mod:`anno_value_only_tags`, so a new tag applies immediately. Tags
+        this game treats as text references are always excluded.
+        """
+        user_tags = anno_value_only_tags.USER_VALUE_ONLY_TAGS
+        return (frozenset(self.value_only_tags) | user_tags) - frozenset(self.text_id_tags)
+
     def is_value_only(self, tag: str) -> bool:
         """True when *tag* holds a plain quantity that references nothing."""
-        return tag in self.value_only_tags
+        if tag in self.value_only_tags:
+            return True
+        return (tag in anno_value_only_tags.USER_VALUE_ONLY_TAGS
+                and tag not in self.text_id_tags)
+
+    def rules_fingerprint(self) -> str:
+        """Short hash of the rules that shape the parsed data.
+
+        The on-disk index stores results that depend on these rules (text
+        ids per asset, reverse references). Including the hash in the cache
+        location makes a changed value-only list invalidate the index.
+        """
+        parts = ("|".join(sorted(self.effective_value_only_tags())),
+                 "|".join(sorted(self.text_id_tags)))
+        return hashlib.sha1("\n".join(parts).encode("utf-8")).hexdigest()[:12]
 
     def is_text_reference(self, tag: str, value) -> bool:
         """True when *tag* points at a text entry and *value* looks like a key."""
