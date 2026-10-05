@@ -51,7 +51,15 @@ jobs:
         id: create_release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/Anno_XML_Viewer_v${{ steps.get_version.outputs.VERSION }}.exe
+          # The two ini files are shipped next to the EXE: the user-defined
+          # value-only tags and the Buff/Effect XML tags.
+          files: |
+            dist/Anno_XML_Viewer_v${{ steps.get_version.outputs.VERSION }}.exe
+            config_value_only.ini
+            config_buffs.ini
+          # Missing ini files only produce a warning; the release is still
+          # created with whatever files exist (at least the EXE).
+          fail_on_unmatched_files: false
           name: ${{ github.ref_type == 'tag' && format('v{0}', steps.get_version.outputs.VERSION) || format('v{0}', steps.get_version.outputs.VERSION) }}
           tag_name: v${{ steps.get_version.outputs.VERSION }}
           draft: false
@@ -67,5 +75,6 @@ jobs:
             
             ### Download
             You can find the executable file in the Assets section below.
+            Place `config_value_only.ini` and `config_buffs.ini` in the same folder as the EXE.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

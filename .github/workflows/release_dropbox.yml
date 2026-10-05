@@ -120,10 +120,33 @@ jobs:
           DROPBOX_REFRESH_TOKEN: ${{ secrets.DROPBOX_REFRESH_TOKEN }}
           VERSION: ${{ steps.get_version.outputs.VERSION }}
         run: |
-          $file = "dist\Anno_XML_Viewer_v$env:VERSION.exe"
+          $ErrorActionPreference = "Stop"
 
-          if (-not (Test-Path $file)) {
-              throw "Datei nicht gefunden: $file"
+          # Lokale Datei -> Zielpfad in Dropbox.
+          $exe = "dist\Anno_XML_Viewer_v$env:VERSION.exe"
+
+          # Die EXE ist Pflicht.
+          if (-not (Test-Path $exe)) {
+              throw "Datei nicht gefunden: $exe"
+          }
+
+          $uploads = [ordered]@{
+              $exe = "/Anno_XML_Viewer/Anno_XML_Viewer_v$env:VERSION.exe"
+          }
+
+          # Die ini-Dateien sind optional: fehlen sie, wird nur gewarnt.
+          $optionalFiles = [ordered]@{
+              "config_value_only.ini" = "/Anno_XML_Viewer/config_value_only.ini"
+              "config_buffs.ini"      = "/Anno_XML_Viewer/config_buffs.ini"
+          }
+
+          foreach ($file in $optionalFiles.Keys) {
+              if (Test-Path $file) {
+                  $uploads[$file] = $optionalFiles[$file]
+              }
+              else {
+                  Write-Host "::warning::Optionale Datei nicht gefunden, wird uebersprungen: $file"
+              }
           }
 
           # 1. Frischen Access Token über den Refresh Token anfordern
@@ -144,30 +167,37 @@ jobs:
           }
 
           # 2. Upload durchführen
-          $dropboxPath = "/Anno_XML_Viewer/Anno_XML_Viewer_v$env:VERSION.exe"
+          foreach ($file in $uploads.Keys) {
+              $dropboxPath = $uploads[$file]
 
-          Write-Host "Upload von:"
-          Write-Host $file
-          Write-Host ""
-          Write-Host "nach Dropbox:"
-          Write-Host $dropboxPath
+              Write-Host "Upload von:"
+              Write-Host $file
+              Write-Host ""
+              Write-Host "nach Dropbox:"
+              Write-Host $dropboxPath
 
-          $arg = @{
-              path       = $dropboxPath
-              mode       = "overwrite"
-              autorename = $false
-              mute       = $false
-          } | ConvertTo-Json -Compress
+              $arg = @{
+                  path       = $dropboxPath
+                  mode       = "overwrite"
+                  autorename = $false
+                  mute       = $false
+              } | ConvertTo-Json -Compress
 
-          curl.exe `
-            -X POST "https://content.dropboxapi.com/2/files/upload" `
-            --header "Authorization: Bearer $accessToken" `
-            --header "Dropbox-API-Arg: $arg" `
-            --header "Content-Type: application/octet-stream" `
-            --data-binary "@$file"
+              # --fail-with-body: HTTP-Fehler von Dropbox (z. B. 401, 409)
+              # fuehren zu einem Exitcode ungleich 0.
+              curl.exe `
+                --fail-with-body `
+                -X POST "https://content.dropboxapi.com/2/files/upload" `
+                --header "Authorization: Bearer $accessToken" `
+                --header "Dropbox-API-Arg: $arg" `
+                --header "Content-Type: application/octet-stream" `
+                --data-binary "@$file"
 
-          if ($LASTEXITCODE -ne 0) {
-              throw "Dropbox Upload fehlgeschlagen."
+              if ($LASTEXITCODE -ne 0) {
+                  throw "Dropbox Upload fehlgeschlagen: $file"
+              }
+
+              Write-Host ""
           }
 
           Write-Host "Upload erfolgreich abgeschlossen."
